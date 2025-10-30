@@ -1,2 +1,65 @@
+# Build directories
 build/
 dist/
+*.spec
+
+# Configuration files (contain sensitive API keys!)
+*.json
+config.json
+client_config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Monitoring data (sensitive!)
+monitor_data/
+screenshots/
+offline_logs/
+*.png
+*.jpg
+*.jpeg
+
+# Logs
+*.log
+*.txt
+SERVER_INFO.txt
+
+# PyInstaller
+*.manifest
+*.exe
+*.dll
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
