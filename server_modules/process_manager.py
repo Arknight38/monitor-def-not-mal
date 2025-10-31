@@ -1,4 +1,5 @@
 import psutil
+import sys
 from typing import List, Dict, Optional
 
 def get_processes_list() -> List[Dict]:

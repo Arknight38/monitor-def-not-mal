@@ -1,6 +1,6 @@
 """
-Configuration Management - Fixed version
-Exports config, pc_id, and API_KEY properly
+Configuration Management - Clean version
+Properly exports config, pc_id, and API_KEY
 """
 import json
 import os
@@ -12,11 +12,13 @@ DATA_DIR = Path("monitor_data")
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 OFFLINE_LOGS_DIR = DATA_DIR / "offline_logs"
 
+
 def ensure_directories():
     """Create necessary directories"""
     DATA_DIR.mkdir(exist_ok=True)
     SCREENSHOTS_DIR.mkdir(exist_ok=True)
     OFFLINE_LOGS_DIR.mkdir(exist_ok=True)
+
 
 def load_config():
     """Load configuration from file"""
@@ -50,6 +52,7 @@ def load_config():
     
     return config
 
+
 def load_callback_config():
     """Load callback configuration"""
     callback_file = Path("callback_config.json")
@@ -74,6 +77,7 @@ def load_callback_config():
         json.dump(default_config, f, indent=4)
     
     return default_config
+
 
 # Initialize directories
 ensure_directories()

