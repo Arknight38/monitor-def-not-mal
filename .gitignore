@@ -48,6 +48,7 @@ offline_logs/
 *.log
 *.txt
 SERVER_INFO.txt
+*xml
 
 # PyInstaller
 *.manifest

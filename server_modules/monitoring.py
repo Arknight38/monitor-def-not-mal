@@ -1,3 +1,7 @@
+"""
+Monitoring Module - Fixed version
+Handles keyboard, mouse, and window monitoring
+"""
 import time
 from datetime import datetime
 from threading import Thread, Lock
@@ -47,6 +51,10 @@ def get_active_window_process():
         return process.name()
     except:
         return "Unknown"
+
+def get_last_activity():
+    """Get timestamp of last activity"""
+    return last_activity_time
 
 def log_event(event_type, details=None, pc_id=None):
     """Log an event with timestamp"""
@@ -109,8 +117,9 @@ def on_move(x, y):
 
 def on_press(key):
     """Keyboard press handler"""
-    global monitoring
+    global last_activity_time, monitoring
     if monitoring:
+        last_activity_time = datetime.now()
         process_keystroke(key)
         if not hasattr(key, 'char'):
             log_event("key_press", {

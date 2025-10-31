@@ -1,3 +1,7 @@
+"""
+Configuration Management - Fixed version
+Exports config, pc_id, and API_KEY properly
+"""
 import json
 import os
 import secrets
@@ -70,3 +74,11 @@ def load_callback_config():
         json.dump(default_config, f, indent=4)
     
     return default_config
+
+# Initialize directories
+ensure_directories()
+
+# Load configuration
+config = load_config()
+pc_id = config['pc_id']
+API_KEY = config['api_key']

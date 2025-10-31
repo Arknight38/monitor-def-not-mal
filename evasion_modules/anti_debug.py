@@ -1,3 +1,7 @@
+"""
+Anti-Debugging Detection (Educational Demo)
+Demonstrates awareness of debugging environments
+"""
 import ctypes
 import time
 import os
@@ -9,9 +13,21 @@ except ImportError:
     PSUTIL_AVAILABLE = False
 
 def is_debugger_present():
-    """Check if process is being debugged"""
+    """Check if process is being debugged using IsDebuggerPresent"""
     try:
         return ctypes.windll.kernel32.IsDebuggerPresent() != 0
+    except:
+        return False
+
+def check_remote_debugger():
+    """Check for remote debugger using CheckRemoteDebuggerPresent"""
+    try:
+        is_debugged = ctypes.c_bool()
+        ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
+            ctypes.windll.kernel32.GetCurrentProcess(),
+            ctypes.byref(is_debugged)
+        )
+        return is_debugged.value
     except:
         return False
 
@@ -23,7 +39,7 @@ def check_debugger_processes():
     debugger_processes = [
         'ollydbg.exe', 'x64dbg.exe', 'x32dbg.exe', 'ida.exe', 'ida64.exe',
         'windbg.exe', 'processhacker.exe', 'procexp.exe', 'procmon.exe',
-        'cheatengine-x86_64.exe'
+        'cheatengine-x86_64.exe', 'cheatengine.exe'
     ]
     
     try:
@@ -59,20 +75,37 @@ def check_parent_process():
     except:
         return False
 
-def perform_anti_debug_checks():
-    """Perform all anti-debugging checks"""
-    checks_failed = []
+def check_debugging_environment():
+    """
+    Perform all anti-debugging checks
+    Returns dict with results
+    """
+    results = {
+        'is_being_debugged': False,
+        'debugger_present': False,
+        'remote_debugger': False,
+        'debugger_process': False,
+        'timing_anomaly': False,
+        'debugger_parent': False
+    }
     
     if is_debugger_present():
-        checks_failed.append("IsDebuggerPresent detected")
+        results['debugger_present'] = True
+        results['is_being_debugged'] = True
+    
+    if check_remote_debugger():
+        results['remote_debugger'] = True
+        results['is_being_debugged'] = True
     
     if check_debugger_processes():
-        checks_failed.append("Debugger process detected")
+        results['debugger_process'] = True
+        results['is_being_debugged'] = True
     
     if timing_check():
-        checks_failed.append("Timing anomaly detected")
+        results['timing_anomaly'] = True
     
     if check_parent_process():
-        checks_failed.append("Debugger parent process detected")
+        results['debugger_parent'] = True
+        results['is_being_debugged'] = True
     
-    return checks_failed
+    return results

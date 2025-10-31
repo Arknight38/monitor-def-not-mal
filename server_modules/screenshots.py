@@ -1,12 +1,16 @@
+"""
+Screenshot Module - Fixed version
+Handles screenshot capture and automatic screenshots
+"""
 import os
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from threading import Thread
+from datetime import datetime
 from PIL import ImageGrab
 
-from .config import SCREENSHOTS_DIR
+from .config import SCREENSHOTS_DIR, config
+from .monitoring import get_monitoring_status, get_last_activity
 
+# Global state
 screenshot_history = []
 last_screenshot_time = None
 auto_screenshot_enabled = False
@@ -29,6 +33,7 @@ def take_screenshot():
             "path": str(filepath)
         })
         
+        # Keep only last 100 screenshots
         if len(screenshot_history) > 100:
             old = screenshot_history.pop(0)
             try:
@@ -51,14 +56,14 @@ def get_latest_screenshot():
         return screenshot_history[-1]
     return None
 
-def auto_screenshot_worker(config, get_monitoring_status, get_last_activity):
+def auto_screenshot_thread():
     """Background thread for automatic screenshots"""
     global last_screenshot_time, auto_screenshot_enabled, auto_screenshot_interval
     
     while True:
         time.sleep(10)
         
-        if not get_monitoring_status() or not auto_screenshot_enabled or config is None:
+        if not get_monitoring_status() or not auto_screenshot_enabled:
             continue
         
         now = datetime.now()
@@ -66,6 +71,7 @@ def auto_screenshot_worker(config, get_monitoring_status, get_last_activity):
         if last_screenshot_time is None or \
            (now - last_screenshot_time).total_seconds() >= auto_screenshot_interval:
             
+            # Check motion detection if enabled
             if config.get('motion_detection', False):
                 if (now - get_last_activity()).total_seconds() > 60:
                     continue

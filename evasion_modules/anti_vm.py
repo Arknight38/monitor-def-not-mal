@@ -1,3 +1,7 @@
+"""
+Anti-VM Detection (Educational Demo)
+Demonstrates awareness of virtualized environments
+"""
 import os
 import platform
 
@@ -15,7 +19,7 @@ def check_vm_vendor_strings():
     computer_name = os.environ.get('COMPUTERNAME', '').upper()
     for indicator in vm_indicators:
         if indicator.upper() in computer_name:
-            return True
+            return indicator
     
     # Check system info
     try:
@@ -26,45 +30,49 @@ def check_vm_vendor_strings():
         
         for indicator in vm_indicators:
             if indicator.upper() in system_str:
-                return True
+                return indicator
     except:
         pass
     
-    return False
+    return None
 
 def check_vm_processes():
     """Check for VM-specific processes"""
     if not PSUTIL_AVAILABLE:
-        return False
+        return None
     
-    vm_processes = [
-        'vboxservice.exe', 'vboxtray.exe', 'vmtoolsd.exe', 
-        'vmwaretray.exe', 'vmwareuser.exe', 'qemu-ga.exe'
-    ]
+    vm_processes = {
+        'vboxservice.exe': 'VirtualBox',
+        'vboxtray.exe': 'VirtualBox',
+        'vmtoolsd.exe': 'VMware',
+        'vmwaretray.exe': 'VMware',
+        'vmwareuser.exe': 'VMware',
+        'qemu-ga.exe': 'QEMU'
+    }
     
     try:
         for proc in psutil.process_iter(['name']):
             if proc.info['name'] and proc.info['name'].lower() in vm_processes:
-                return True
+                return vm_processes[proc.info['name'].lower()]
     except:
         pass
     
-    return False
+    return None
 
 def check_vm_files():
     """Check for VM-specific files"""
-    vm_files = [
-        'C:\\Program Files\\VMware\\VMware Tools\\',
-        'C:\\Program Files\\Oracle\\VirtualBox Guest Additions\\',
-        'C:\\Windows\\System32\\drivers\\vboxguest.sys',
-        'C:\\Windows\\System32\\drivers\\vmhgfs.sys'
-    ]
+    vm_files = {
+        'C:\\Program Files\\VMware\\VMware Tools\\': 'VMware',
+        'C:\\Program Files\\Oracle\\VirtualBox Guest Additions\\': 'VirtualBox',
+        'C:\\Windows\\System32\\drivers\\vboxguest.sys': 'VirtualBox',
+        'C:\\Windows\\System32\\drivers\\vmhgfs.sys': 'VMware'
+    }
     
-    for path in vm_files:
+    for path, vendor in vm_files.items():
         if os.path.exists(path):
-            return True
+            return vendor
     
-    return False
+    return None
 
 def check_low_resources():
     """Check for suspiciously low resources (VM sandbox)"""
@@ -91,20 +99,41 @@ def check_low_resources():
     
     return False
 
-def perform_vm_checks():
-    """Perform all VM detection checks"""
-    checks_failed = []
+def check_virtual_environment():
+    """
+    Perform all VM detection checks
+    Returns dict with results
+    """
+    results = {
+        'is_virtual': False,
+        'vendor': None,
+        'vendor_string': False,
+        'vm_process': False,
+        'vm_files': False,
+        'low_resources': False
+    }
     
-    if check_vm_vendor_strings():
-        checks_failed.append("VM vendor string detected")
+    vendor = check_vm_vendor_strings()
+    if vendor:
+        results['vendor_string'] = True
+        results['is_virtual'] = True
+        results['vendor'] = vendor
     
-    if check_vm_processes():
-        checks_failed.append("VM process detected")
+    vendor = check_vm_processes()
+    if vendor:
+        results['vm_process'] = True
+        results['is_virtual'] = True
+        if not results['vendor']:
+            results['vendor'] = vendor
     
-    if check_vm_files():
-        checks_failed.append("VM files detected")
+    vendor = check_vm_files()
+    if vendor:
+        results['vm_files'] = True
+        results['is_virtual'] = True
+        if not results['vendor']:
+            results['vendor'] = vendor
     
     if check_low_resources():
-        checks_failed.append("Low resources (possible VM)")
+        results['low_resources'] = True
     
-    return checks_failed
+    return results
