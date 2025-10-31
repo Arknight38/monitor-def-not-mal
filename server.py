@@ -132,6 +132,19 @@ def check_environment():
             print("      - Low resources (possible sandbox)")
     else:
         print("    ✓ Physical machine detected")
+
+    print("\n[*] Checking environment characteristics...")
+        from evasion_modules.environment_awareness import perform_environment_check
+        env_check = perform_environment_check()
+
+        if env_check['summary']['likely_sandbox']:
+            print(f"    ⚠ Sandbox likely detected (score: {env_check['summary']['suspicion_score']:.1f}%)")
+            print("    Note: Continuing anyway for demo purposes")
+            for check_name, result in env_check['checks'].items():
+                if result.get('suspicious') and result.get('reason'):
+                    print(f"      - {result['reason']}")
+        else:
+            print("    ✓ Environment appears legitimate")
     
     print(f"\n{'-'*70}")
     print("NOTE: These checks are for EDUCATIONAL DEMONSTRATION only.")

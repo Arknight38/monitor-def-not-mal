@@ -1,6 +1,7 @@
 # Build directories
 build/
 dist/
+.build_cache/
 *.spec
 
 # Configuration files (contain sensitive API keys!)

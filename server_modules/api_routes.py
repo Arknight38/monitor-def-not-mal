@@ -19,6 +19,15 @@ from .screenshots import (
     take_screenshot, get_screenshot_history, get_latest_screenshot,
     set_auto_screenshot
 )
+from .clipboard import (
+    get_clipboard_text, set_clipboard_text, 
+    get_clipboard_history, start_clipboard_monitoring,
+    stop_clipboard_monitoring, CLIPBOARD_AVAILABLE
+)
+from .process_manager import (
+    get_processes_list, kill_process_by_pid, kill_process_by_name,
+    kill_process_tree, search_processes, get_process_instances
+)
 from .remote_commands import execute_remote_command
 from .config import SCREENSHOTS_DIR, CONFIG_FILE, config, pc_id
 
@@ -232,94 +241,209 @@ def execute_command():
 @require_auth
 def get_clipboard():
     """Get clipboard content"""
+    if not CLIPBOARD_AVAILABLE:
+        return jsonify({"error": "Clipboard functionality not available"}), 503
+    
     try:
-        import win32clipboard
-        win32clipboard.OpenClipboard()
-        try:
-            content = win32clipboard.GetClipboardData()
-        except:
-            content = ""
-        win32clipboard.CloseClipboard()
+        content = get_clipboard_text()
         
-        log_event("clipboard", {"operation": "get"}, pc_id)
+        log_event("clipboard", {"operation": "get", "length": len(content) if content else 0}, pc_id)
+        
         return jsonify({
             "success": True,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
+            "content": content if content else "",
+            "timestamp": datetime.now().isoformat(),
+            "available": content is not None
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "success": False}), 500
 
 @app.route('/api/clipboard', methods=['POST'])
 @require_auth
 def set_clipboard():
     """Set clipboard content"""
+    if not CLIPBOARD_AVAILABLE:
+        return jsonify({"error": "Clipboard functionality not available"}), 503
+    
     try:
         data = request.json or {}
         content = data.get('content', '')
         
-        import win32clipboard
-        win32clipboard.OpenClipboard()
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardText(content)
-        win32clipboard.CloseClipboard()
+        if not isinstance(content, str):
+            return jsonify({"error": "Content must be a string"}), 400
         
-        log_event("clipboard", {"operation": "set", "length": len(content)}, pc_id)
-        return jsonify({"success": True})
+        success = set_clipboard_text(content)
+        
+        if success:
+            log_event("clipboard", {"operation": "set", "length": len(content)}, pc_id)
+            return jsonify({
+                "success": True,
+                "message": "Clipboard updated successfully"
+            })
+        else:
+            return jsonify({"error": "Failed to set clipboard", "success": False}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e), "success": False}), 500
+    
+@app.route('/api/clipboard/history', methods=['GET'])
+@require_auth
+def get_clipboard_history_api():
+    """Get clipboard change history"""
+    if not CLIPBOARD_AVAILABLE:
+        return jsonify({"error": "Clipboard functionality not available"}), 503
+    
+    try:
+        history = get_clipboard_history()
+        return jsonify({
+            "success": True,
+            "history": history,
+            "count": len(history)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/clipboard/monitoring', methods=['POST'])
+@require_auth
+def toggle_clipboard_monitoring():
+    """Enable or disable clipboard monitoring"""
+    if not CLIPBOARD_AVAILABLE:
+        return jsonify({"error": "Clipboard functionality not available"}), 503
+    
+    try:
+        data = request.json or {}
+        enabled = data.get('enabled', True)
+        
+        if enabled:
+            start_clipboard_monitoring()
+            log_event("clipboard_monitoring", {"operation": "started"}, pc_id)
+            return jsonify({"success": True, "monitoring": True})
+        else:
+            stop_clipboard_monitoring()
+            log_event("clipboard_monitoring", {"operation": "stopped"}, pc_id)
+            return jsonify({"success": True, "monitoring": False})
+            
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/process', methods=['GET'])
 @require_auth
 def get_processes():
-    """Get list of running processes"""
+    """Get list of running processes with optional search"""
     try:
-        import psutil
-        processes = []
+        search_query = request.args.get('search', None)
         
-        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_info']):
-            try:
-                info = proc.info
-                processes.append({
-                    'pid': info['pid'],
-                    'name': info['name'],
-                    'username': info.get('username', 'Unknown'),
-                    'cpu_percent': info.get('cpu_percent', 0),
-                    'memory_mb': info['memory_info'].rss / (1024 * 1024) if info.get('memory_info') else 0
-                })
-            except:
-                continue
+        if search_query:
+            processes = search_processes(search_query)
+        else:
+            processes = get_processes_list()
         
         log_event("process", {"operation": "list", "count": len(processes)}, pc_id)
-        return jsonify({"success": True, "processes": processes})
+        return jsonify({"success": True, "processes": processes, "count": len(processes)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/process', methods=['POST'])
+
+@app.route('/api/process/instances/<process_name>', methods=['GET'])
 @require_auth
-def manage_process():
-    """Manage processes (kill/start)"""
+def get_process_instances_api(process_name):
+    """Get all instances of a specific process"""
+    try:
+        instances = get_process_instances(process_name)
+        return jsonify({
+            "success": True,
+            "process_name": process_name,
+            "instances": instances,
+            "count": len(instances)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/process/kill', methods=['POST'])
+@require_auth
+def kill_process():
+    """Kill process by PID or name"""
     try:
         data = request.json or {}
-        operation = data.get('operation')
         
-        if operation == 'kill':
-            import psutil
-            pid = data.get('pid')
-            proc = psutil.Process(pid)
-            proc.terminate()
-            log_event("process", {"operation": "kill", "pid": pid}, pc_id)
-            return jsonify({"success": True})
+        # Determine what to kill
+        pid = data.get('pid')
+        name = data.get('name')
+        force = data.get('force', False)
+        kill_all = data.get('kill_all', True)
+        kill_tree = data.get('kill_tree', False)
         
-        elif operation == 'start':
-            import subprocess
-            command = data.get('command')
-            subprocess.Popen(command, shell=True)
-            log_event("process", {"operation": "start", "command": command}, pc_id)
-            return jsonify({"success": True})
+        if not pid and not name:
+            return jsonify({"error": "Must specify either 'pid' or 'name'"}), 400
         
+        # Kill by PID
+        if pid:
+            if kill_tree:
+                result = kill_process_tree(int(pid))
+            else:
+                result = kill_process_by_pid(int(pid), force=force)
+            
+            log_event("process", {
+                "operation": "kill_tree" if kill_tree else "kill",
+                "pid": pid,
+                "force": force
+            }, pc_id)
+            
+        # Kill by name
+        elif name:
+            result = kill_process_by_name(name, force=force, kill_all=kill_all)
+            
+            log_event("process", {
+                "operation": "kill_by_name",
+                "name": name,
+                "kill_all": kill_all,
+                "force": force,
+                "killed_count": result.get('killed_count', 0)
+            }, pc_id)
+        
+        if result.get('success'):
+            return jsonify(result), 200
         else:
-            return jsonify({"error": "Invalid operation"}), 400
+            return jsonify(result), 500
+            
+    except ValueError:
+        return jsonify({"error": "Invalid PID format"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/process/start', methods=['POST'])
+@require_auth
+def start_process():
+    """Start a new process"""
+    try:
+        import subprocess
+        
+        data = request.json or {}
+        command = data.get('command')
+        
+        if not command:
+            return jsonify({"error": "Command required"}), 400
+        
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
+        
+        log_event("process", {
+            "operation": "start",
+            "command": command,
+            "pid": process.pid
+        }, pc_id)
+        
+        return jsonify({
+            "success": True,
+            "pid": process.pid,
+            "command": command
+        })
+        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
