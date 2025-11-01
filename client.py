@@ -1,21 +1,16 @@
-"""
-PC Monitor Client - Main Entry Point
-Refactored modular architecture
-"""
-
 import tkinter as tk
 from tkinter import messagebox
 import sys
 import traceback
 
 # Import modular components
-from client_modules.gui import PCMonitorClient
+from client_modules.gui_auto import PCMonitorAutoClient
 
 def main():
-    """Main entry point for client application"""
+    """Main entry point for auto-callback client"""
     try:
         # Create and run the application
-        app = PCMonitorClient()
+        app = PCMonitorAutoClient()
         app.mainloop()
     except KeyboardInterrupt:
         print("\n\nClient stopped by user")

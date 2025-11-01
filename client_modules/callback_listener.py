@@ -1,8 +1,3 @@
-"""
-Callback Listener - Receives data pushed from servers
-Allows servers to auto-register and push updates to client
-"""
-
 import json
 import os
 import secrets
@@ -14,7 +9,7 @@ from flask_cors import CORS
 
 
 class CallbackListener:
-    """Enhanced callback listener - auto-accepts server registrations"""
+    """Enhanced callback listener - fully automatic server discovery"""
 
     def __init__(self, client_app):
         self.client_app = client_app
@@ -39,24 +34,37 @@ class CallbackListener:
         def handle_heartbeat():
             return self.receive_heartbeat()
 
+        @self.app.route('/status', methods=['GET'])
+        def handle_status():
+            return self.get_status()
+
     def load_config(self):
         """Load callback listener configuration"""
         config_file = "callback_listener_config.json"
+
         if os.path.exists(config_file):
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    config = json.load(f)
+
+                    # Ensure required fields exist
+                    if 'callback_key' not in config:
+                        config['callback_key'] = secrets.token_urlsafe(32)
+
+                    return config
             except Exception:
                 pass
 
-        # Default configuration
+        # Default configuration - fully automatic
         default_config = {
             "enabled": True,
             "port": 8080,
             "callback_key": secrets.token_urlsafe(32),
+            "auto_accept_servers": True,  # Always auto-accept
             "auto_update_gui": True,
-            "auto_accept_servers": True,
-            "require_approval": False
+            "require_approval": False,
+            "show_notifications": True,
+            "auto_refresh_interval": 30
         }
 
         try:
@@ -91,12 +99,12 @@ class CallbackListener:
         port = self.config['port']
 
         print(f"\n{'='*70}")
-        print("CALLBACK LISTENER STARTED")
+        print("🎯 AUTO-CALLBACK LISTENER STARTED")
         print(f"{'='*70}")
         print(f"Listening on: {local_ip}:{port}")
         print(f"Callback Key: {self.config['callback_key']}")
-        print(f"\nServers should connect to:")
-        print(f"  http://{local_ip}:{port}")
+        print(f"\nServers will automatically connect!")
+        print(f"Mode: 100% Automatic Discovery")
         print(f"{'='*70}\n")
 
         return True
@@ -124,7 +132,7 @@ class CallbackListener:
         print("Callback listener stopped")
 
     def _run_server(self):
-        """Run Flask server in background thread using make_server"""
+        """Run Flask server in background thread"""
         try:
             from werkzeug.serving import make_server
             host = '0.0.0.0'
@@ -136,12 +144,12 @@ class CallbackListener:
             self.running = False
 
     def receive_registration(self):
-        """Handle server registration"""
+        """Handle server registration - AUTOMATIC"""
         try:
             # Verify callback key
             callback_key = request.headers.get('X-Callback-Key')
             if callback_key != self.config['callback_key']:
-                print(f"[!] Unauthorized registration attempt")
+                print(f"[!] ⚠️  Unauthorized registration attempt")
                 return jsonify({"error": "Unauthorized", "status": "rejected"}), 401
 
             data = request.json
@@ -157,52 +165,45 @@ class CallbackListener:
             capabilities = data.get('capabilities', {})
 
             print(f"\n{'='*70}")
-            print(f"NEW SERVER REGISTRATION")
+            print(f"🆕 NEW SERVER AUTO-REGISTRATION")
             print(f"{'='*70}")
             print(f"PC Name: {pc_name}")
             print(f"PC ID: {pc_id}")
             print(f"Server URL: {server_url}")
-            print(f"Capabilities: {', '.join(k for k, v in capabilities.items() if v)}")
+            print(f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-            # Auto-accept if enabled
-            if self.config.get('auto_accept_servers', True):
-                self.registered_servers[pc_id] = {
-                    'name': pc_name,
-                    'url': server_url,
-                    'api_key': api_key,
-                    'registered_at': datetime.datetime.now().isoformat(),
-                    'last_seen': datetime.datetime.now().isoformat(),
-                    'capabilities': capabilities
+            # ALWAYS auto-accept (100% automatic mode)
+            self.registered_servers[pc_id] = {
+                'name': pc_name,
+                'url': server_url,
+                'api_key': api_key,
+                'registered_at': datetime.datetime.now().isoformat(),
+                'last_seen': datetime.datetime.now().isoformat(),
+                'capabilities': capabilities,
+                'status': 'active'
+            }
+
+            # Schedule GUI update in main thread
+            print(f"[*] 📊 Adding server to GUI...")
+            try:
+                self.client_app.after(
+                    100,
+                    lambda: self.add_server_to_gui(pc_name, server_url, api_key)
+                )
+            except Exception as e:
+                print(f"[!] Error scheduling GUI update: {e}")
+
+            print(f"Status: ✅ AUTO-ACCEPTED")
+            print(f"{'='*70}\n")
+
+            return jsonify({
+                "status": "accepted",
+                "message": "Server registered automatically",
+                "client_info": {
+                    "manager_name": "Auto-Discovery Manager",
+                    "auto_mode": True
                 }
-
-                # Schedule GUI update in main thread
-                print(f"[*] Scheduling GUI update for {pc_name}")
-                try:
-                    self.client_app.after(100, lambda: self.add_server_to_gui(pc_name, server_url, api_key))
-                except Exception as e:
-                    print(f"[!] Error scheduling GUI update: {e}")
-                    # Fallback - try direct call
-                    try:
-                        self.add_server_to_gui(pc_name, server_url, api_key)
-                    except Exception as e2:
-                        print(f"[!] Direct GUI update also failed: {e2}")
-
-                print(f"Status: AUTO-ACCEPTED")
-                print(f"{'='*70}\n")
-
-                return jsonify({
-                    "status": "accepted",
-                    "message": "Server registered successfully"
-                }), 200
-            else:
-                # Manual approval required
-                print(f"Status: PENDING APPROVAL")
-                print(f"{'='*70}\n")
-                self.client_app.after(0, lambda: self.show_approval_dialog(data))
-                return jsonify({
-                    "status": "pending",
-                    "message": "Waiting for approval"
-                }), 202
+            }), 200
 
         except Exception as e:
             print(f"[!] Registration error: {e}")
@@ -221,7 +222,9 @@ class CallbackListener:
             pc_id = data.get('pc_id')
 
             if pc_id in self.registered_servers:
-                self.registered_servers[pc_id]['last_seen'] = datetime.datetime.now().isoformat()
+                self.registered_servers[pc_id]['last_seen'] = \
+                    datetime.datetime.now().isoformat()
+                self.registered_servers[pc_id]['status'] = 'active'
 
             return jsonify({"status": "ok"}), 200
 
@@ -242,17 +245,20 @@ class CallbackListener:
 
             pc_id = data.get('pc_id')
 
+            # Update last seen
+            if pc_id in self.registered_servers:
+                self.registered_servers[pc_id]['last_seen'] = \
+                    datetime.datetime.now().isoformat()
+
             # Update GUI if enabled
             if self.config.get('auto_update_gui', True):
                 try:
-                    self.client_app.after(0, lambda: self.client_app.process_callback_data(data))
+                    self.client_app.after(
+                        0,
+                        lambda: self.client_app.process_callback_data(data)
+                    )
                 except Exception as e:
                     print(f"Error scheduling GUI update: {e}")
-                    # Fallback to direct call
-                    try:
-                        self.client_app.process_callback_data(data)
-                    except Exception as e2:
-                        print(f"Direct GUI update failed: {e2}")
 
             return jsonify({
                 "status": "ok",
@@ -265,68 +271,94 @@ class CallbackListener:
             print(f"Error processing callback: {e}")
             return jsonify({"error": str(e)}), 500
 
+    def get_status(self):
+        """Get current status of callback listener"""
+        try:
+            return jsonify({
+                "status": "active" if self.running else "inactive",
+                "registered_servers": len(self.registered_servers),
+                "servers": {
+                    pc_id: {
+                        "name": info['name'],
+                        "url": info['url'],
+                        "status": info['status'],
+                        "last_seen": info['last_seen']
+                    }
+                    for pc_id, info in self.registered_servers.items()
+                },
+                "config": {
+                    "auto_accept": self.config.get('auto_accept_servers', True),
+                    "port": self.config['port']
+                }
+            }), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     def add_server_to_gui(self, name, url, api_key):
         """Add server to GUI (called in main thread)"""
         try:
-            print(f"[*] Adding server to GUI: {name}")
+            print(f"[*] 🖥️  Adding server to GUI: {name}")
 
             # Check if server already exists
             if name in self.client_app.pc_tabs:
                 print(f"[!] Server '{name}' already exists in GUI")
+                # Update existing connection
+                tab = self.client_app.pc_tabs[name]
+                tab.server_url = url
+                tab.api_key = api_key
                 return
 
             # Add the server tab
-            print(f"[*] Creating tab for {name}")
+            print(f"[*] Creating new tab for {name}")
             self.client_app.add_server_tab(name, url, api_key)
 
-            # Save configuration
-            print(f"[*] Saving server configuration")
-            self.client_app.save_servers()
-
             # Update status
-            self.client_app.update_status_bar(f"New server added: {name}")
+            self.client_app.update_status_bar(
+                f"✅ New server connected: {name}"
+            )
 
             # Show notification
-            print(f"[*] Showing notification")
-            try:
-                from tkinter import messagebox
-                messagebox.showinfo(
-                    "Server Connected",
-                    f"New server '{name}' has been automatically added!\n\n"
-                    f"URL: {url}\n\n"
-                    f"You can now monitor this PC from the '{name}' tab."
-                )
-            except Exception as e:
-                print(f"Could not show notification: {e}")
+            if self.config.get('show_notifications', True):
+                print(f"[*] Showing connection notification")
+                try:
+                    from tkinter import messagebox
+                    messagebox.showinfo(
+                        "Server Connected",
+                        f"✅ New server auto-connected!\n\n"
+                        f"Name: {name}\n"
+                        f"URL: {url}\n\n"
+                        f"The server is now being monitored from\n"
+                        f"the '{name}' tab."
+                    )
+                except Exception as e:
+                    print(f"Could not show notification: {e}")
 
-            print(f"[*] Server {name} successfully added to GUI")
+            print(f"[*] ✅ Server {name} successfully added to GUI")
 
         except Exception as e:
             print(f"[!] Error adding server to GUI: {e}")
             import traceback
             traceback.print_exc()
 
-    def show_approval_dialog(self, registration_data):
-        """Show dialog for manual server approval"""
-        try:
-            from tkinter import messagebox
-            
-            pc_name = registration_data.get('pc_name', 'Unknown')
-            pc_id = registration_data.get('pc_id')
-            server_url = registration_data.get('server_url')
-            api_key = registration_data.get('api_key')
+    def get_registered_servers(self):
+        """Get list of all registered servers"""
+        return self.registered_servers.copy()
 
-            result = messagebox.askyesno(
-                "New Server Registration",
-                f"A new server wants to connect:\n\n"
-                f"Name: {pc_name}\n"
-                f"ID: {pc_id}\n"
-                f"URL: {server_url}\n\n"
-                f"Do you want to accept this connection?"
-            )
+    def check_server_health(self):
+        """Check health of all registered servers"""
+        now = datetime.datetime.now()
 
-            if result:
-                self.add_server_to_gui(pc_name, server_url, api_key)
+        for pc_id, info in self.registered_servers.items():
+            try:
+                last_seen = datetime.datetime.fromisoformat(info['last_seen'])
+                age = (now - last_seen).total_seconds()
 
-        except Exception as e:
-            print(f"Error showing approval dialog: {e}")
+                # Mark as inactive if no heartbeat for 2 minutes
+                if age > 120:
+                    if info['status'] != 'inactive':
+                        info['status'] = 'inactive'
+                        print(f"[!] Server {info['name']} marked as inactive")
+
+            except Exception:
+                pass
