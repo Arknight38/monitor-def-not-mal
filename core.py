@@ -136,8 +136,11 @@ class ConfigManager:
         self.config['callback']['callback_url'] = f"http://{domain}:{port}"
         self._save_config()
     
-    def create_legacy_configs(self):
+    def create_legacy_configs(self, output_dir="."):
         """Create legacy configuration files for compatibility"""
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
         # Server config
         server_config = {
             "api_key": self.config['server']['api_key'],
@@ -151,19 +154,19 @@ class ConfigManager:
             "data_retention_days": self.config['server']['data_retention_days']
         }
         
-        with open('config.json', 'w') as f:
+        with open(os.path.join(output_dir, 'config.json'), 'w') as f:
             json.dump(server_config, f, indent=2)
         
         # Callback config
-        with open('callback_config.json', 'w') as f:
+        with open(os.path.join(output_dir, 'callback_config.json'), 'w') as f:
             json.dump(self.config['callback'], f, indent=2)
         
         # Callback listener config
-        with open('callback_listener_config.json', 'w') as f:
+        with open(os.path.join(output_dir, 'callback_listener_config.json'), 'w') as f:
             json.dump(self.config['callback_listener'], f, indent=2)
         
         # Multi-client config
-        with open('multi_client_config.json', 'w') as f:
+        with open(os.path.join(output_dir, 'multi_client_config.json'), 'w') as f:
             json.dump(self.config['multi_client'], f, indent=2)
 
 
@@ -173,7 +176,7 @@ class CallbackSetup:
     def __init__(self, config_manager):
         self.config_manager = config_manager
     
-    def setup_callback_system(self):
+    def setup_callback_system(self, output_dir="."):
         """Setup the callback system with DuckDNS configuration"""
         
         print(f"\n{'='*70}")
@@ -199,7 +202,7 @@ class CallbackSetup:
         
         # 5. Create legacy config files for compatibility
         print("4️⃣ Creating legacy config files...")
-        self.config_manager.create_legacy_configs()
+        self.config_manager.create_legacy_configs(output_dir)
         
         print(f"\n{'='*70}")
         print("✅ CALLBACK SETUP COMPLETE")
@@ -208,7 +211,7 @@ class CallbackSetup:
         print(f"  🌐 Callback URL: {self.config_manager.get_callback_config()['callback_url']}")
         print(f"  🔑 Callback Key: {callback_key[:16]}...")
         print(f"  ✅ Enabled: {self.config_manager.get_callback_config()['enabled']}")
-        print(f"  📂 Config Files: Created in current directory")
+        print(f"  📂 Config Files: Created in {output_dir}")
         print(f"\n🎯 Next Steps:")
         print(f"  1. Start your client: python client.py")
         print(f"  2. Copy the callback key from the client")
@@ -338,9 +341,9 @@ callback_setup = CallbackSetup(unified_config)
 integration_manager = IntegrationManager(unified_config)
 
 
-def setup_callback_system():
+def setup_callback_system(output_dir="."):
     """Legacy interface for callback setup"""
-    return callback_setup.setup_callback_system()
+    return callback_setup.setup_callback_system(output_dir)
 
 def check_current_config():
     """Legacy interface for config check"""
@@ -368,17 +371,18 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         command = sys.argv[1]
+        output_dir = sys.argv[2] if len(sys.argv) > 2 else "."
         
         if command == "check":
             check_current_config()
         elif command == "setup":
-            setup_callback_system()
+            setup_callback_system(output_dir)
         elif command == "verify":
             if integration_manager.verify_system_integrity():
                 print("✅ System verification passed")
             else:
                 print("❌ System verification failed")
         else:
-            print("Usage: python core.py [check|setup|verify]")
+            print("Usage: python core.py [check|setup|verify] [output_dir]")
     else:
         setup_callback_system()
