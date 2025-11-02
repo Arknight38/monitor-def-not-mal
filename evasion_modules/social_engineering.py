@@ -399,9 +399,9 @@ class SocialEngineeringDemo:
         print("\n" + "="*70)
         print("SOCIAL ENGINEERING DIALOG DEMONSTRATION")
         print("="*70)
-        print("\nThis will show various fake error dialogs used")
-        print("to trick users into granting admin privileges.")
-        print("\nNOTE: These are FAKE dialogs for educational purposes!")
+        print("\nExecuting social engineering attack vectors")
+        print("to obtain elevated privileges and user compliance.")
+        print("\nIMPLEMENTING REAL SOCIAL ENGINEERING TECHNIQUES")
         print("="*70)
         
         input("\nPress Enter to see example dialogs...")

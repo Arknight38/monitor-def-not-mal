@@ -3,15 +3,37 @@ from tkinter import messagebox
 import sys
 import traceback
 
-# Import modular components
-from client_modules.gui_auto import PCMonitorAutoClient
+# Enhanced GUI import with fallback
+try:
+    from client_modules.enhanced_gui import create_enhanced_gui
+    ENHANCED_GUI_AVAILABLE = True
+    print("✓ Enhanced GUI available")
+except ImportError as e:
+    ENHANCED_GUI_AVAILABLE = False
+    print(f"[!] Enhanced GUI not available: {e}")
+    # Fallback to standard GUI
+    from client_modules.gui_auto import PCMonitorAutoClient
 
 def main():
-    """Main entry point for auto-callback client"""
+    """Main entry point for enhanced auto-callback client"""
     try:
-        # Create and run the application
-        app = PCMonitorAutoClient()
-        app.mainloop()
+        if ENHANCED_GUI_AVAILABLE:
+            print("🚀 Starting Enhanced Monitor Client v3.0...")
+            print("✨ Modern GUI with real-time monitoring")
+            print("🔒 Advanced security features")
+            print("⚡ Optimized performance")
+            
+            # Create and run enhanced GUI
+            app = create_enhanced_gui()
+            app.run()
+        else:
+            print("Starting Standard Monitor Client...")
+            print("⚠️ Enhanced features not available")
+            
+            # Create and run standard application
+            app = PCMonitorAutoClient()
+            app.mainloop()
+            
     except KeyboardInterrupt:
         print("\n\nClient stopped by user")
         sys.exit(0)

@@ -638,11 +638,66 @@ Server Tab - Part 2: Screenshots, Search, and Dialogs
 
         def load_history():
             history_tree.delete(*history_tree.get_children())
-            # This endpoint needs to be added to the server
-            # For now, show a placeholder message
-            messagebox.showinfo("Info", 
-                            "Clipboard history tracking requires server update.\n"
-                            "Enable clipboard monitoring on server first.")
+            try:
+                # Get clipboard history from server
+                response = requests.get(f"{self.server_url}/api/clipboard/history", 
+                                      headers=self.get_headers(), timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get('success') and 'history' in data:
+                        history = data['history']
+                        
+                        # Populate the tree with clipboard history
+                        for i, entry in enumerate(history[-50:]):  # Show last 50 entries
+                            timestamp = entry.get('timestamp', 'Unknown')
+                            content_type = entry.get('type', 'text')
+                            content_preview = str(entry.get('content', ''))[:100]
+                            app_name = entry.get('source_app', 'Unknown')
+                            
+                            # Format timestamp
+                            try:
+                                from datetime import datetime
+                                ts = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                                formatted_time = ts.strftime('%Y-%m-%d %H:%M:%S')
+                            except:
+                                formatted_time = timestamp
+                            
+                            # Add to tree
+                            item_id = history_tree.insert('', 'end', values=(
+                                formatted_time,
+                                content_type,
+                                content_preview,
+                                app_name
+                            ))
+                            
+                        if history:
+                            messagebox.showinfo("Success", f"Loaded {len(history)} clipboard entries")
+                        else:
+                            messagebox.showinfo("Info", "No clipboard history available")
+                    else:
+                        messagebox.showerror("Error", "Invalid response format from server")
+                
+                elif response.status_code == 404:
+                    # Endpoint not implemented yet, enable clipboard monitoring
+                    enable_response = requests.post(f"{self.server_url}/api/clipboard/enable", 
+                                                  headers=self.get_headers(), timeout=10)
+                    
+                    if enable_response.status_code == 200:
+                        messagebox.showinfo("Info", 
+                                          "Clipboard monitoring enabled on server.\n"
+                                          "History will be available after some activity.")
+                    else:
+                        messagebox.showwarning("Warning", 
+                                             "Clipboard history endpoint not available.\n"
+                                             "Server may need update for this feature.")
+                else:
+                    messagebox.showerror("Error", f"Server error: {response.status_code}")
+                    
+            except requests.exceptions.RequestException as e:
+                messagebox.showerror("Connection Error", f"Failed to connect to server:\n{str(e)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load clipboard history:\n{str(e)}")
 
         ttk.Button(history_frame, text="🔄 Refresh History", 
                 command=load_history).pack(pady=5)

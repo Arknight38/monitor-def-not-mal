@@ -51,6 +51,24 @@ offline_logs/
 SERVER_INFO.txt
 *xml
 
+# Build artifacts and crash reports
+nuitka-crash-report.xml
+*.dist/
+*.build/
+*.onefile-build/
+*.pyi-cache/
+
+# Executables and binaries
+acli.exe
+*.exe
+*.dll
+
+# Temporary build files
+*.tmp
+*.temp
+*.bak
+*.spec
+
 # PyInstaller
 *.manifest
 *.exe
